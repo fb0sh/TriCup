@@ -77,7 +77,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: TriCup-app
-          path: tmp/build/TriCup.app
+          path: tmp/build/*.app
           if-no-files-found: error
 
       - name: Publish release on tag
