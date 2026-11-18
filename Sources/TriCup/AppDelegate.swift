@@ -15,11 +15,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let installer = HelperInstaller()
         let battery = BatteryMonitor()
         let lowBatteryGuard = LowBatteryGuard()
+        let loginItemManager = LoginItemManager()
         let bar = StatusBarController(
             controller: controller,
             installer: installer,
             battery: battery,
-            lowBatteryGuard: lowBatteryGuard
+            lowBatteryGuard: lowBatteryGuard,
+            loginItemManager: loginItemManager
         )
 
         systemManager.onUnexpectedDisconnect = { [weak bar] _ in

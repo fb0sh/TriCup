@@ -8,20 +8,24 @@ final class StatusBarController: NSObject {
     private let installer: HelperInstaller
     private let battery: BatteryStatusProviding
     private let lowBatteryGuard: LowBatteryGuard
+    private let loginItemManager: LoginItemManager
     private let menu = NSMenu()
     private var stateItems: [NSMenuItem] = []
     private var uninstallItem: NSMenuItem?
+    private var loginItem: NSMenuItem?
 
     init(
         controller: CupController,
         installer: HelperInstaller,
         battery: BatteryStatusProviding,
-        lowBatteryGuard: LowBatteryGuard
+        lowBatteryGuard: LowBatteryGuard,
+        loginItemManager: LoginItemManager
     ) {
         self.controller = controller
         self.installer = installer
         self.battery = battery
         self.lowBatteryGuard = lowBatteryGuard
+        self.loginItemManager = loginItemManager
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         super.init()
         configureButton()
@@ -60,6 +64,15 @@ final class StatusBarController: NSObject {
         }
         menu.addItem(.separator())
 
+        let login = NSMenuItem(
+            title: "登录时启动",
+            action: #selector(toggleLoginItem),
+            keyEquivalent: ""
+        )
+        login.target = self
+        menu.addItem(login)
+        loginItem = login
+
         let uninstall = NSMenuItem(
             title: "卸载 Helper…",
             action: #selector(uninstallHelperSelected),
@@ -79,6 +92,7 @@ final class StatusBarController: NSObject {
         updateIcon()
         updateChecks()
         uninstallItem?.isHidden = !installer.isInstalled
+        loginItem?.state = loginItemManager.isEnabled ? .on : .off
     }
 
     private func updateIcon() {
@@ -187,6 +201,16 @@ final class StatusBarController: NSObject {
             try installer.uninstall()
         } catch {
             Notifier.shared.post(title: "TriCup", body: "卸载 Helper 失败：\(error)")
+        }
+        refresh()
+    }
+
+    @objc private func toggleLoginItem() {
+        let enable = !loginItemManager.isEnabled
+        do {
+            try loginItemManager.setEnabled(enable)
+        } catch {
+            Notifier.shared.post(title: "TriCup", body: "无法更新登录项：\(error)")
         }
         refresh()
     }
