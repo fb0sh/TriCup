@@ -39,10 +39,10 @@ final class AssertionPowerManager: PowerManaging {
         }
     }
 
-    private func createAssertion(type: CFString, name: String) throws {
+    private func createAssertion(type: String, name: String) throws {
         var id: IOPMAssertionID = 0
         let result = IOPMAssertionCreateWithName(
-            type,
+            type as CFString,
             IOPMAssertionLevel(kIOPMAssertionLevelOn),
             name as CFString,
             &id
