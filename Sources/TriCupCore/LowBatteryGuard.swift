@@ -35,7 +35,11 @@ public struct LowBatteryGuard: Sendable {
     }
 
     public func blocksFull(_ status: BatteryStatus) -> Bool {
-        status.isAvailable && status.hasBattery && status.onBattery && status.percent <= threshold
+        // Desktops (no internal battery) never block.
+        guard status.hasBattery else { return false }
+        // On a battery-equipped Mac, unknown battery info is unsafe: fail closed.
+        if !status.isAvailable { return true }
+        return status.onBattery && status.percent <= threshold
     }
 
     public func shouldExitFull(_ status: BatteryStatus) -> Bool {

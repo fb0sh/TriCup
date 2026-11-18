@@ -10,6 +10,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     private let lowBatteryGuard: LowBatteryGuard
     private let loginItemManager: LoginItemManager
     private let system: SystemPowerManager
+    private var warnedSleepBlocked = false
     private let menu = NSMenu()
     private var stateItems: [NSMenuItem] = []
     private var uninstallItem: NSMenuItem?
@@ -191,13 +192,19 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     /// Installs the helper on first full-mode entry (one admin authorization),
     /// then applies the change. Failure leaves the previous state untouched.
     private func changeTo(_ target: CupState) {
-        if target == .full && lowBatteryGuard.blocksFull(battery.current()) {
-            Notifier.shared.post(
-                title: "TriCup",
-                body: "电量 ≤\(lowBatteryGuard.threshold)%，未进入满杯。"
-            )
-            refresh()
-            return
+        if target == .full {
+            let status = battery.current()
+            if lowBatteryGuard.blocksFull(status) {
+                let message: String
+                if !status.isAvailable && status.hasBattery {
+                    message = "无法读取电池状态，为安全起见禁止进入满杯。"
+                } else {
+                    message = "电量 ≤\(lowBatteryGuard.threshold)%，未进入满杯。"
+                }
+                Notifier.shared.post(title: "TriCup", body: message)
+                refresh()
+                return
+            }
         }
         if target == .full && installer.status == .notInstalled {
             do {
@@ -216,12 +223,14 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     /// threshold on battery power, exit to empty and notify.
     func evaluateLowBattery() {
         guard controller.state == .full else { return }
-        guard lowBatteryGuard.shouldExitFull(battery.current()) else { return }
+        let status = battery.current()
+        guard lowBatteryGuard.shouldExitFull(status) else { return }
+        let unknownBattery = (!status.isAvailable && status.hasBattery)
 
         if case .failure(let error) = controller.setState(.empty) {
             refresh()
             showError(
-                "低电量，但无法退出满杯",
+                "低电量/电池异常，但无法退出满杯",
                 "\(error)\n\n请手动恢复休眠：\nsudo pmset -a disablesleep 0"
             )
             return
@@ -229,8 +238,13 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         refresh()
         if system.externallyBlocked || system.uncertain {
             showError(
-                "低电量已切空杯，但未确认休眠恢复",
+                "已切空杯，但未确认休眠恢复",
                 "SleepDisabled 可能仍为 1。请手动恢复：\nsudo pmset -a disablesleep 0"
+            )
+        } else if unknownBattery {
+            showError(
+                "电池状态无法读取，已退出满杯",
+                "为安全起见已退出满杯。请检查电池/电源状态。"
             )
         } else {
             Notifier.shared.post(
@@ -247,6 +261,22 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         if case .failure(let error) = result {
             NSLog("TriCup: failed to apply state change: %@", String(describing: error))
             showError("无法切换状态", "\(error)")
+            refresh()
+            return
+        }
+
+        // Never claim sleep is allowed while the real SleepDisabled is still 1
+        // or could not be confirmed. Warn once until the condition clears.
+        if controller.state != .full && (system.externallyBlocked || system.uncertain) {
+            if !warnedSleepBlocked {
+                warnedSleepBlocked = true
+                showError(
+                    "休眠仍被禁止或无法确认",
+                    "实际检测到 SleepDisabled=1 或无法确认。请手动恢复：\nsudo pmset -a disablesleep 0"
+                )
+            }
+        } else {
+            warnedSleepBlocked = false
         }
         refresh()
     }

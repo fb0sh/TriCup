@@ -37,6 +37,25 @@ final class LowBatteryGuardTests: XCTestCase {
         ))
     }
 
+    func testUnknownBatteryInfoOnBatteryDeviceBlocks() {
+        // A MacBook whose battery info cannot be read must fail closed.
+        XCTAssertTrue(guard20.blocksFull(
+            BatteryStatus(isAvailable: false, hasBattery: true, onBattery: false, percent: 0)
+        ))
+    }
+
+    func testUnknownBatteryInfoWithNoBatteryDoesNotBlock() {
+        XCTAssertFalse(guard20.blocksFull(
+            BatteryStatus(isAvailable: false, hasBattery: false, onBattery: false, percent: 0)
+        ))
+    }
+
+    func testShouldExitFullWhenBatteryUnknownOnBatteryDevice() {
+        XCTAssertTrue(guard20.shouldExitFull(
+            BatteryStatus(isAvailable: false, hasBattery: true, onBattery: false, percent: 0)
+        ))
+    }
+
     func testExitFullMatchesBlockRule() {
         let low = BatteryStatus(onBattery: true, percent: 20)
         XCTAssertTrue(guard20.shouldExitFull(low))
