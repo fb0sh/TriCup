@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#endif
 import TriCupCore
 
 /// Installs and removes the privileged helper via a single administrator
@@ -10,11 +13,24 @@ import TriCupCore
 /// and restores an existing installation if an upgrade fails (so a failed install
 /// never breaks a working helper or its lease). Gatekeeper is never disabled.
 final class HelperInstaller {
+    enum HelperStatus: Equatable {
+        case notInstalled
+        case installedNotRunning
+        case recovering
+        case ready
+    }
+
     private let fileManager = FileManager.default
 
     /// Installed means the files exist AND the LaunchDaemon is actually loaded.
     var isInstalled: Bool {
         filesInstalled && launchDaemonLoaded()
+    }
+
+    var status: HelperStatus {
+        guard filesInstalled else { return .notInstalled }
+        guard launchDaemonLoaded() else { return .installedNotRunning }
+        return socketExists ? .ready : .recovering
     }
 
     private var filesInstalled: Bool {
@@ -66,12 +82,63 @@ final class HelperInstaller {
     private func waitUntilReady(timeout: TimeInterval = 8.0) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
-            if filesInstalled && launchDaemonLoaded() && socketExists {
+            if filesInstalled && launchDaemonLoaded() && socketExists && helperResponds() {
                 return true
             }
             Thread.sleep(forTimeInterval: 0.2)
         }
-        return filesInstalled && launchDaemonLoaded() && socketExists
+        return filesInstalled && launchDaemonLoaded() && socketExists && helperResponds()
+    }
+
+    /// Confirms the helper is actually serving the protocol (not just that a
+    /// socket file exists). Used to validate a completed install.
+    private func helperResponds() -> Bool {
+        let handle = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard handle >= 0 else { return false }
+        defer { close(handle) }
+
+        var noSigPipe: Int32 = 1
+        setsockopt(handle, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size))
+        var timeout = timeval(tv_sec: 1, tv_usec: 0)
+        setsockopt(handle, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+        setsockopt(handle, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+
+        var addr = sockaddr_un()
+        addr.sun_family = sa_family_t(AF_UNIX)
+        let bytes = Array(HelperPaths.socketPath.utf8)
+        let capacity = MemoryLayout.size(ofValue: addr.sun_path)
+        guard bytes.count < capacity else { return false }
+        withUnsafeMutableBytes(of: &addr.sun_path) { raw in
+            let base = raw.bindMemory(to: UInt8.self)
+            for (index, value) in bytes.enumerated() {
+                base[index] = value
+            }
+            base[bytes.count] = 0
+        }
+        let length = socklen_t(MemoryLayout<sockaddr_un>.size)
+        let result = withUnsafePointer(to: &addr) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                connect(handle, $0, length)
+            }
+        }
+        guard result == 0 else { return false }
+
+        let request = Data("status\n".utf8)
+        var offset = 0
+        request.withUnsafeBytes { raw in
+            guard let base = raw.baseAddress else { return }
+            while offset < raw.count {
+                let written = write(handle, base.advanced(by: offset), raw.count - offset)
+                if written <= 0 { return }
+                offset += written
+            }
+        }
+
+        var buffer = [UInt8](repeating: 0, count: 64)
+        let count = read(handle, &buffer, buffer.count)
+        guard count > 0 else { return false }
+        let response = String(decoding: buffer[0..<count], as: UTF8.self)
+        return response.hasPrefix("OK ")
     }
 
     // MARK: - Script execution

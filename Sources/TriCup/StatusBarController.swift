@@ -199,7 +199,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             refresh()
             return
         }
-        if target == .full && !installer.isInstalled {
+        if target == .full && installer.status == .notInstalled {
             do {
                 try installer.install()
             } catch {
@@ -266,13 +266,38 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     @objc private func uninstallHelperSelected() {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
-            if self.controller.state == .full {
+
+            if self.controller.state != .empty {
                 if case .failure(let error) = self.controller.setState(.empty) {
-                    self.showError("无法恢复电源设置，已取消卸载 Helper", "\(error)")
+                    self.showError(
+                        "无法恢复电源设置，已取消卸载 Helper",
+                        "\(error)\n\n请手动执行：\nsudo pmset -a disablesleep 0"
+                    )
                     self.refresh()
                     return
                 }
             }
+
+            // Only uninstall when sleep is genuinely allowed again and no lease
+            // is active, so we never delete the only recovery record.
+            let actual = self.system.currentSleepDisabled()
+            if actual != false {
+                let detail: String
+                if actual == true {
+                    detail = "SleepDisabled 仍为 1（可能残留或由其它程序设置）。已保留 Helper 与租约记录。请先手动执行：\nsudo pmset -a disablesleep 0\n确认后再卸载。"
+                } else {
+                    detail = "无法确认当前休眠状态，已取消卸载。请先手动执行 sudo pmset -a disablesleep 0 并确认后重试。"
+                }
+                self.showError("暂不能卸载 Helper", detail)
+                self.refresh()
+                return
+            }
+            if self.system.helperLeaseActive() == true {
+                self.showError("暂不能卸载 Helper", "检测到活跃租约，已取消卸载。请先退出满杯。")
+                self.refresh()
+                return
+            }
+
             do {
                 try self.installer.uninstall()
             } catch {

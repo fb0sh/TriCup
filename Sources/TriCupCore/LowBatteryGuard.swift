@@ -1,10 +1,21 @@
 import Foundation
 
 public struct BatteryStatus: Equatable, Sendable {
+    /// False when battery information could not be read at all.
+    public let isAvailable: Bool
+    /// False on desktops / Macs with no internal battery.
+    public let hasBattery: Bool
     public let onBattery: Bool
     public let percent: Int
 
-    public init(onBattery: Bool, percent: Int) {
+    public init(
+        isAvailable: Bool = true,
+        hasBattery: Bool = true,
+        onBattery: Bool,
+        percent: Int
+    ) {
+        self.isAvailable = isAvailable
+        self.hasBattery = hasBattery
         self.onBattery = onBattery
         self.percent = percent
     }
@@ -24,7 +35,7 @@ public struct LowBatteryGuard: Sendable {
     }
 
     public func blocksFull(_ status: BatteryStatus) -> Bool {
-        status.onBattery && status.percent <= threshold
+        status.isAvailable && status.hasBattery && status.onBattery && status.percent <= threshold
     }
 
     public func shouldExitFull(_ status: BatteryStatus) -> Bool {

@@ -12,8 +12,15 @@ SCRATCH="$ROOT/tmp/.build"
 BUILD_OUT="$ROOT/tmp/build"
 APP="$BUILD_OUT/TriCup.app"
 
-VERSION="${VERSION:-$(git describe --tags --always 2>/dev/null || echo 0.0.0-dev)}"
+RAW_VERSION="${VERSION:-$(git describe --tags --always 2>/dev/null || echo 0.0.0-dev)}"
+VERSION="${RAW_VERSION#v}"
+if ! /usr/bin/printf '%s' "$VERSION" | grep -Eq '^[0-9]+(\.[0-9]+){0,2}$'; then
+    VERSION="0.0.0"
+fi
 BUILD_NUMBER="${BUILD_NUMBER:-0}"
+case "$BUILD_NUMBER" in
+    ''|*[!0-9]*) BUILD_NUMBER=0 ;;
+esac
 
 mkdir -p "$BUILD_OUT"
 
@@ -66,6 +73,16 @@ codesign --verify --strict "$APP"
 ZIP="$BUILD_OUT/TriCup.app.zip"
 rm -f "$ZIP"
 ditto -c -k --keepParent "$APP" "$ZIP"
+
+# Verify the produced zip is intact and contains the app bundle.
+if ! unzip -t "$ZIP" >/dev/null 2>&1; then
+    echo "error: zip integrity check failed" >&2
+    exit 1
+fi
+if ! unzip -l "$ZIP" | grep -q "TriCup.app/Contents/MacOS/TriCup"; then
+    echo "error: zip missing TriCup executable" >&2
+    exit 1
+fi
 
 echo "Built app: $APP"
 echo "Artifact:  $ZIP"

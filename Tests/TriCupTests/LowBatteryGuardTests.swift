@@ -25,6 +25,18 @@ final class LowBatteryGuardTests: XCTestCase {
         XCTAssertFalse(guard20.blocksFull(BatteryStatus(onBattery: false, percent: 100)))
     }
 
+    func testUnavailableBatteryInfoDoesNotBlock() {
+        XCTAssertFalse(guard20.blocksFull(
+            BatteryStatus(isAvailable: false, hasBattery: true, onBattery: true, percent: 5)
+        ))
+    }
+
+    func testNoBatteryHardwareDoesNotBlock() {
+        XCTAssertFalse(guard20.blocksFull(
+            BatteryStatus(isAvailable: true, hasBattery: false, onBattery: false, percent: 0)
+        ))
+    }
+
     func testExitFullMatchesBlockRule() {
         let low = BatteryStatus(onBattery: true, percent: 20)
         XCTAssertTrue(guard20.shouldExitFull(low))

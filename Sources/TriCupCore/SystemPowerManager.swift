@@ -104,6 +104,17 @@ public final class SystemPowerManager: PowerManaging {
         }
     }
 
+    /// Read the current real `SleepDisabled` value (nil if unavailable).
+    public func currentSleepDisabled() -> Bool? {
+        guard let reader = reader else { return nil }
+        return try? reader.readSleepDisabled()
+    }
+
+    /// Whether the helper currently reports an active lease (nil if unreachable).
+    public func helperLeaseActive() -> Bool? {
+        try? lid.leaseActive()
+    }
+
     private func perform(_ state: CupState) throws {
         switch state {
         case .empty:
