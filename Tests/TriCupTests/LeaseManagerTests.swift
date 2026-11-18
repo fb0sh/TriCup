@@ -277,4 +277,20 @@ final class LeaseManagerTests: XCTestCase {
         XCTAssertTrue(setting.value)
         XCTAssertNil(store.record)
     }
+
+    func testRecoveryFailureKeepsRecordAndBlocksNewLease() {
+        let setting = FakeSleepSetting(false)
+        setting.value = true // residual SleepDisabled from a previous run
+        setting.failAllWrites = true
+        let store = MemoryLeaseStore()
+        store.record = LeaseRecord(originalSleepDisabled: false)
+        let manager = LeaseManager(setting: setting, store: store, maxRestoreAttempts: 3)
+
+        XCTAssertThrowsError(try manager.recoverOnStartup())
+        XCTAssertNotNil(store.record, "record must be kept after failed recovery")
+
+        XCTAssertThrowsError(try manager.enable()) { error in
+            XCTAssertEqual(error as? LeaseError, .alreadyActive)
+        }
+    }
 }

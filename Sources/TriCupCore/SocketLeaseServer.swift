@@ -22,11 +22,13 @@ public final class SocketLeaseServer {
     private let ownerUID: uid_t?
     private let ownerProvider: (() -> uid_t?)?
     private let mode: mode_t
+    private let maxClients = 8
     private let lock = NSLock()
     private var listenFD: Int32 = -1
     private var running = false
     private var acceptThread: Thread?
     private var lastOwner: uid_t?
+    private var activeClients = 0
 
     public init(
         socketPath: String = HelperPaths.socketPath,
@@ -107,9 +109,17 @@ public final class SocketLeaseServer {
             throw PowerError("bind() failed: errno \(code)")
         }
 
-        chmod(socketPath, mode)
+        guard chmod(socketPath, mode) == 0 else {
+            let code = errno
+            close(fd)
+            throw PowerError("chmod(socket) failed: errno \(code)")
+        }
         if let owner = ownerProvider?() ?? ownerUID {
-            chown(socketPath, owner, gid_t.max)
+            guard chown(socketPath, owner, gid_t.max) == 0 else {
+                let code = errno
+                close(fd)
+                throw PowerError("chown(socket) failed: errno \(code)")
+            }
             lastOwner = owner
         }
 
@@ -147,8 +157,18 @@ public final class SocketLeaseServer {
             }
             if clientFD < 0 {
                 if !running { break }
+                continue // includes EINTR
+            }
+
+            lock.lock()
+            let overloaded = activeClients >= maxClients
+            if !overloaded { activeClients += 1 }
+            lock.unlock()
+            if overloaded {
+                close(clientFD) // refuse without writing (avoids SIGPIPE)
                 continue
             }
+
             let thread = Thread { [weak self] in self?.handleClient(clientFD) }
             thread.name = "TriCupHelper.client"
             thread.start()
@@ -158,10 +178,18 @@ public final class SocketLeaseServer {
     // MARK: - Per-connection handling
 
     private func handleClient(_ fd: Int32) {
-        defer { close(fd) }
+        var nosigpipe: Int32 = 1
+        setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &nosigpipe, socklen_t(MemoryLayout<Int32>.size))
+
+        defer {
+            lock.lock()
+            activeClients -= 1
+            lock.unlock()
+            close(fd)
+        }
 
         guard let peer = peerInfo(fd: fd), validatePeer(peer) else {
-            writeLine(fd, "ERR unauthorized\n")
+            _ = writeLine(fd, "ERR unauthorized\n")
             return
         }
 
@@ -174,7 +202,7 @@ public final class SocketLeaseServer {
             }
         }
 
-        while let line = readLine(fd) {
+        clientLoop: while let line = readLine(fd) {
             let command = line.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             switch command {
             case "enable":
@@ -183,10 +211,10 @@ public final class SocketLeaseServer {
                     try manager.enable()
                     holdsLease = true
                     lock.unlock()
-                    writeLine(fd, "OK enabled\n")
+                    if !writeLine(fd, "OK enabled\n") { break clientLoop }
                 } catch {
                     lock.unlock()
-                    writeLine(fd, "ERR \(SocketLeaseServer.describe(error))\n")
+                    if !writeLine(fd, "ERR \(SocketLeaseServer.describe(error))\n") { break clientLoop }
                 }
             case "disable":
                 lock.lock()
@@ -194,18 +222,18 @@ public final class SocketLeaseServer {
                     try manager.disable()
                     holdsLease = false
                     lock.unlock()
-                    writeLine(fd, "OK disabled\n")
+                    if !writeLine(fd, "OK disabled\n") { break clientLoop }
                 } catch {
                     lock.unlock()
-                    writeLine(fd, "ERR \(SocketLeaseServer.describe(error))\n")
+                    if !writeLine(fd, "ERR \(SocketLeaseServer.describe(error))\n") { break clientLoop }
                 }
             case "status":
                 lock.lock()
                 let active = manager.isActive
                 lock.unlock()
-                writeLine(fd, active ? "OK active\n" : "OK inactive\n")
+                if !writeLine(fd, active ? "OK active\n" : "OK inactive\n") { break clientLoop }
             default:
-                writeLine(fd, "ERR unknown_command\n")
+                if !writeLine(fd, "ERR unknown_command\n") { break clientLoop }
             }
         }
     }
@@ -256,6 +284,7 @@ private func readLine(_ fd: Int32) -> String? {
             return bytes.isEmpty ? nil : String(decoding: bytes, as: UTF8.self)
         }
         if readCount < 0 {
+            if errno == EINTR { continue }
             return nil
         }
         if byte == 0x0A {
@@ -265,21 +294,30 @@ private func readLine(_ fd: Int32) -> String? {
             continue
         }
         if bytes.count >= 512 {
-            return nil
+            return nil // reject oversized/abusive requests
         }
         bytes.append(byte)
     }
 }
 
-private func writeLine(_ fd: Int32, _ string: String) {
+@discardableResult
+private func writeLine(_ fd: Int32, _ string: String) -> Bool {
     let data = Data(string.utf8)
+    var ok = true
+    var offset = 0
     data.withUnsafeBytes { raw in
         guard let base = raw.baseAddress else { return }
-        var offset = 0
         while offset < raw.count {
             let written = write(fd, base.advanced(by: offset), raw.count - offset)
-            if written <= 0 { break }
-            offset += written
+            if written > 0 {
+                offset += written
+            } else if written < 0 && errno == EINTR {
+                continue
+            } else {
+                ok = false
+                break
+            }
         }
     }
+    return ok && offset == data.count
 }

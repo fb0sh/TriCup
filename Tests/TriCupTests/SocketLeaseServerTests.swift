@@ -148,4 +148,47 @@ final class SocketLeaseServerTests: XCTestCase {
         send(second, "enable")
         XCTAssertTrue(readLine(second).hasPrefix("ERR"), "second lease should be rejected")
     }
+
+    func testOversizedCommandDoesNotKillServer() throws {
+        let path = makeSocketPath()
+        let setting = SocketFakeSetting(false)
+        let manager = LeaseManager(setting: setting, store: SocketMemoryStore())
+        let server = SocketLeaseServer(socketPath: path, manager: manager) { _ in true }
+        try server.start()
+        defer { server.stop() }
+
+        guard let first = openConnection(path) else { return XCTFail("could not connect") }
+        let big = String(repeating: "a", count: 600)
+        send(first, big)
+        _ = readLine(first) // server rejects oversized input
+        close(first)
+
+        // Server must still serve new connections.
+        guard let second = openConnection(path) else { return XCTFail("server died after oversized input") }
+        send(second, "status")
+        XCTAssertEqual(readLine(second), "OK inactive")
+        close(second)
+    }
+
+    func testAbruptDisconnectReleasesLease() throws {
+        let path = makeSocketPath()
+        let setting = SocketFakeSetting(false)
+        let manager = LeaseManager(setting: setting, store: SocketMemoryStore())
+        let server = SocketLeaseServer(socketPath: path, manager: manager) { _ in true }
+        try server.start()
+        defer { server.stop() }
+
+        guard let fd = openConnection(path) else { return XCTFail("could not connect") }
+        send(fd, "enable")
+        XCTAssertEqual(readLine(fd), "OK enabled")
+        XCTAssertTrue(setting.value)
+        close(fd) // abrupt close without disable
+
+        XCTAssertTrue(waitUntil { setting.value == false }, "lease not released on abrupt disconnect")
+
+        guard let again = openConnection(path) else { return XCTFail("could not reconnect") }
+        send(again, "status")
+        XCTAssertEqual(readLine(again), "OK inactive")
+        close(again)
+    }
 }
