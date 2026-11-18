@@ -2,7 +2,7 @@ import AppKit
 import TriCupCore
 
 /// Owns the `NSStatusItem`, its icon, tooltip and right-click menu.
-final class StatusBarController: NSObject {
+final class StatusBarController: NSObject, NSMenuDelegate {
     private let statusItem: NSStatusItem
     private let controller: CupController
     private let installer: HelperInstaller
@@ -54,6 +54,8 @@ final class StatusBarController: NSObject {
     }
 
     private func buildMenu() {
+        menu.delegate = self
+        menu.autoenablesItems = false
         stateItems.removeAll()
         for state in CupState.allCases {
             let item = NSMenuItem(title: state.title, action: #selector(selectState(_:)), keyEquivalent: "")
@@ -146,13 +148,25 @@ final class StatusBarController: NSObject {
 
     private func showMenu() {
         refresh()
-        guard let button = statusItem.button else { return }
-        _ = menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.height + 4), in: button)
+        // Present the menu natively through the status item. The menu is only
+        // attached while showing (right click); clearing it afterwards keeps
+        // left-click state cycling working and gives the native look/position.
+        statusItem.menu = menu
+        statusItem.button?.performClick(nil)
+        statusItem.menu = nil
+    }
+
+    func menuDidClose(_ menu: NSMenu) {
+        statusItem.menu = nil
     }
 
     @objc private func selectState(_ sender: NSMenuItem) {
         guard let state = CupState(rawValue: sender.tag) else { return }
-        changeTo(state)
+        // Defer so the native menu fully closes before any modal work (install
+        // authorization / alerts) runs.
+        DispatchQueue.main.async { [weak self] in
+            self?.changeTo(state)
+        }
     }
 
     /// Installs the helper on first full-mode entry (one admin authorization),
@@ -216,40 +230,46 @@ final class StatusBarController: NSObject {
     }
 
     @objc private func uninstallHelperSelected() {
-        if controller.state == .full {
-            if case .failure(let error) = controller.setState(.empty) {
-                Notifier.shared.post(
-                    title: "TriCup",
-                    body: "无法恢复电源设置，已取消卸载 Helper：\(error)"
-                )
-                refresh()
-                return
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            if self.controller.state == .full {
+                if case .failure(let error) = self.controller.setState(.empty) {
+                    self.showError("无法恢复电源设置，已取消卸载 Helper", "\(error)")
+                    self.refresh()
+                    return
+                }
             }
+            do {
+                try self.installer.uninstall()
+            } catch {
+                NSLog("TriCup: helper uninstall failed: %@", String(describing: error))
+                self.showError("卸载 Helper 失败", "\(error)")
+            }
+            self.refresh()
         }
-        do {
-            try installer.uninstall()
-        } catch {
-            NSLog("TriCup: helper uninstall failed: %@", String(describing: error))
-            showError("卸载 Helper 失败", "\(error)")
-        }
-        refresh()
     }
 
     @objc private func toggleLoginItem() {
-        let enable = !loginItemManager.isEnabled
-        do {
-            try loginItemManager.setEnabled(enable)
-        } catch {
-            Notifier.shared.post(title: "TriCup", body: "无法更新登录项：\(error)")
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            let enable = !self.loginItemManager.isEnabled
+            do {
+                try self.loginItemManager.setEnabled(enable)
+            } catch {
+                self.showError("无法更新登录项", "\(error)")
+            }
+            self.refresh()
         }
-        refresh()
     }
 
     @objc private func quitSelected() {
-        // Best-effort: returning to empty releases the lease before quitting.
-        if controller.state != .empty {
-            _ = controller.setState(.empty)
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            // Best-effort: returning to empty releases the lease before quitting.
+            if self.controller.state != .empty {
+                _ = self.controller.setState(.empty)
+            }
+            NSApp.terminate(nil)
         }
-        NSApp.terminate(nil)
     }
 }
