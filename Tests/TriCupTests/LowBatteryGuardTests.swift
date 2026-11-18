@@ -25,8 +25,10 @@ final class LowBatteryGuardTests: XCTestCase {
         XCTAssertFalse(guard20.blocksFull(BatteryStatus(onBattery: false, percent: 100)))
     }
 
-    func testUnavailableBatteryInfoDoesNotBlock() {
-        XCTAssertFalse(guard20.blocksFull(
+    func testUnavailableBatteryInfoBlocksWhenBatteryEquipped() {
+        // New fail-closed policy: unknown battery info on a battery-equipped Mac
+        // must block full mode.
+        XCTAssertTrue(guard20.blocksFull(
             BatteryStatus(isAvailable: false, hasBattery: true, onBattery: true, percent: 5)
         ))
     }
