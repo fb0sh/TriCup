@@ -26,11 +26,12 @@ public protocol BatteryStatusProviding: AnyObject {
 }
 
 /// Blocks / exits full mode when running on battery at or below a fixed
-/// threshold (20% by policy). Desktops (no battery) never trigger it.
+/// threshold (15% by policy). Desktops (no battery) never trigger it, and
+/// unreadable battery info on a battery-equipped Mac fails closed.
 public struct LowBatteryGuard: Sendable {
     public let threshold: Int
 
-    public init(threshold: Int = 20) {
+    public init(threshold: Int = 15) {
         self.threshold = threshold
     }
 
