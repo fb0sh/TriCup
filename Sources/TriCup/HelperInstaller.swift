@@ -198,6 +198,7 @@ final class HelperInstaller {
         LEASE="$STATEDIR/lease.json"
         FLAG="$STATEDIR/uninstalling"
         LOCKDIR="$STATEDIR/enable.lock"
+        LOCKPID="$LOCKDIR/pid"
         BAK_DST="$DST.tricupbak"
         BAK_PLIST="$PLIST.tricupbak"
         HAD_OLD=0
@@ -211,6 +212,7 @@ final class HelperInstaller {
             trap - EXIT
             if [ "$LOCKED" = "1" ]; then
                 /bin/rm -f "$FLAG"
+                /bin/rm -f "$LOCKPID"
                 /bin/rmdir "$LOCKDIR" 2>/dev/null || true
             fi
             if [ "$SUCCESS" = "1" ]; then
@@ -233,12 +235,32 @@ final class HelperInstaller {
         /bin/chmod 0700 "$STATEDIR" 2>/dev/null || true
         trap cleanup_on_exit EXIT
 
-        i=0
-        while ! /bin/mkdir "$LOCKDIR" 2>/dev/null; do
-            i=$((i+1))
-            if [ "$i" -ge 50 ]; then log "TRICUP_INSTALL_REFUSED: enable lock timeout"; exit 5; fi
-            /bin/sleep 0.1
-        done
+        acquire_lock() {
+            n=0
+            while ! /bin/mkdir "$LOCKDIR" 2>/dev/null; do
+                if [ -f "$LOCKPID" ]; then
+                    lpid=$(/bin/cat "$LOCKPID" 2>/dev/null || true)
+                    if [ -n "$lpid" ] && ! /bin/kill -0 "$lpid" 2>/dev/null; then
+                        /bin/rm -f "$LOCKPID"
+                        /bin/rmdir "$LOCKDIR" 2>/dev/null || true
+                        continue
+                    fi
+                else
+                    now=$(/bin/date +%s)
+                    mt=$(/usr/bin/stat -f %m "$LOCKDIR" 2>/dev/null || /bin/echo "$now")
+                    if [ $((now - mt)) -ge 5 ]; then
+                        /bin/rmdir "$LOCKDIR" 2>/dev/null || true
+                        continue
+                    fi
+                fi
+                n=$((n+1))
+                if [ "$n" -ge 50 ]; then log "TRICUP_INSTALL_REFUSED: enable lock timeout"; return 1; fi
+                /bin/sleep 0.1
+            done
+            /usr/bin/printf '%s' "$$" > "$LOCKPID"
+            return 0
+        }
+        if ! acquire_lock; then exit 5; fi
         LOCKED=1
         (umask 077; : > "$FLAG")
 
@@ -297,6 +319,7 @@ final class HelperInstaller {
         LEASE="$STATEDIR/lease.json"
         FLAG="$STATEDIR/uninstalling"
         LOCKDIR="$STATEDIR/enable.lock"
+        LOCKPID="$LOCKDIR/pid"
         LOCKED=0
         log() { /bin/echo "$*" >&2; }
         cleanup_on_exit() {
@@ -304,6 +327,7 @@ final class HelperInstaller {
             trap - EXIT
             if [ "$LOCKED" = "1" ]; then
                 /bin/rm -f "$FLAG"
+                /bin/rm -f "$LOCKPID"
                 /bin/rmdir "$LOCKDIR" 2>/dev/null || true
             fi
             exit $rc
@@ -313,12 +337,32 @@ final class HelperInstaller {
         /bin/chmod 0700 "$STATEDIR" 2>/dev/null || true
         trap cleanup_on_exit EXIT
 
-        i=0
-        while ! /bin/mkdir "$LOCKDIR" 2>/dev/null; do
-            i=$((i+1))
-            if [ "$i" -ge 50 ]; then log "TRICUP_UNINSTALL_REFUSED: enable lock timeout"; exit 5; fi
-            /bin/sleep 0.1
-        done
+        acquire_lock() {
+            n=0
+            while ! /bin/mkdir "$LOCKDIR" 2>/dev/null; do
+                if [ -f "$LOCKPID" ]; then
+                    lpid=$(/bin/cat "$LOCKPID" 2>/dev/null || true)
+                    if [ -n "$lpid" ] && ! /bin/kill -0 "$lpid" 2>/dev/null; then
+                        /bin/rm -f "$LOCKPID"
+                        /bin/rmdir "$LOCKDIR" 2>/dev/null || true
+                        continue
+                    fi
+                else
+                    now=$(/bin/date +%s)
+                    mt=$(/usr/bin/stat -f %m "$LOCKDIR" 2>/dev/null || /bin/echo "$now")
+                    if [ $((now - mt)) -ge 5 ]; then
+                        /bin/rmdir "$LOCKDIR" 2>/dev/null || true
+                        continue
+                    fi
+                fi
+                n=$((n+1))
+                if [ "$n" -ge 50 ]; then log "TRICUP_UNINSTALL_REFUSED: enable lock timeout"; return 1; fi
+                /bin/sleep 0.1
+            done
+            /usr/bin/printf '%s' "$$" > "$LOCKPID"
+            return 0
+        }
+        if ! acquire_lock; then exit 5; fi
         LOCKED=1
         (umask 077; : > "$FLAG")
 

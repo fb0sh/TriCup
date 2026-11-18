@@ -30,6 +30,9 @@ public final class SocketLeaseServer {
     /// scripts to serialize enabling against maintenance.
     private let enableLockDirectory: String?
     private let enableLockTimeout: TimeInterval
+    /// A lock directory without a live owner PID is only reclaimed once it is at
+    /// least this old (avoids racing a just-created lock before its PID is written).
+    private let lockStaleAge: TimeInterval = 5
     private let uninstallingFlagPath: String
 
     private let lock = NSLock()
@@ -288,27 +291,60 @@ public final class SocketLeaseServer {
     }
 
     /// Cross-process mutual exclusion with the root install/uninstall scripts,
-    /// implemented with an atomic `mkdir` lock directory. Returns false on
-    /// timeout so the caller can refuse the enable.
+    /// implemented with an atomic `mkdir` lock directory plus a `pid` file. A
+    /// lock whose owner died (e.g. SIGKILL) is reclaimed so a stale lock cannot
+    /// permanently block full mode. Returns false on timeout.
     private func acquireEnableLock() -> Bool {
         guard let directory = enableLockDirectory else { return true }
         let parent = (directory as NSString).deletingLastPathComponent
         try? FileManager.default.createDirectory(atPath: parent, withIntermediateDirectories: true)
+        let pidPath = directory + "/pid"
+
         let deadline = Date().addingTimeInterval(enableLockTimeout)
         while Date() < deadline {
             if mkdir(directory, mode_t(0o700)) == 0 {
+                let pidText = String(getpid())
+                try? pidText.write(toFile: pidPath, atomically: true, encoding: .utf8)
                 return true
             }
             if errno != EEXIST {
                 return false
+            }
+            if reclaimStaleLock(directory: directory, pidPath: pidPath) {
+                continue
             }
             Thread.sleep(forTimeInterval: 0.05)
         }
         return false
     }
 
+    /// Returns true if a stale lock was reclaimed (caller should retry mkdir).
+    private func reclaimStaleLock(directory: String, pidPath: String) -> Bool {
+        let fileManager = FileManager.default
+        if let text = try? String(contentsOfFile: pidPath, encoding: .utf8),
+           let pid = Int32(text.trimmingCharacters(in: .whitespacesAndNewlines)),
+           pid > 0 {
+            if kill(pid, 0) == 0 || errno == EPERM {
+                return false // owner still alive
+            }
+            try? fileManager.removeItem(atPath: pidPath)
+            rmdir(directory)
+            return true
+        }
+        // No readable PID: only reclaim after the directory is old enough.
+        if let attributes = try? fileManager.attributesOfItem(atPath: directory),
+           let modified = attributes[.modificationDate] as? Date,
+           Date().timeIntervalSince(modified) >= lockStaleAge {
+            try? fileManager.removeItem(atPath: pidPath)
+            rmdir(directory)
+            return true
+        }
+        return false
+    }
+
     private func releaseEnableLock() {
         guard let directory = enableLockDirectory else { return }
+        try? FileManager.default.removeItem(atPath: directory + "/pid")
         rmdir(directory)
     }
 

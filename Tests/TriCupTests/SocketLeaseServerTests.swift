@@ -289,4 +289,31 @@ final class SocketLeaseServerTests: XCTestCase {
         XCTAssertEqual(readLine(fd), "OK active", "lease connection must survive idle timeout")
         close(fd)
     }
+
+    func testStaleEnableLockIsReclaimed() throws {
+        let path = makeSocketPath()
+        let lockDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("tricup-lock-\(UUID().uuidString)").path
+        XCTAssertEqual(mkdir(lockDir, 0o700), 0)
+        // A PID that is not running: the server should reclaim the stale lock.
+        try Data("999999".utf8).write(to: URL(fileURLWithPath: lockDir + "/pid"))
+        defer { rmdir(lockDir) }
+
+        let setting = SocketFakeSetting(false)
+        let manager = LeaseManager(setting: setting, store: SocketMemoryStore())
+        let server = SocketLeaseServer(
+            socketPath: path,
+            manager: manager,
+            enableLockDirectory: lockDir,
+            enableLockTimeout: 1.0
+        ) { _ in true }
+        try server.start()
+        defer { server.stop() }
+
+        guard let fd = openConnection(path) else { return XCTFail("could not connect") }
+        send(fd, "enable")
+        XCTAssertEqual(readLine(fd), "OK enabled", "stale lock should be reclaimed")
+        XCTAssertTrue(setting.value)
+        close(fd)
+    }
 }

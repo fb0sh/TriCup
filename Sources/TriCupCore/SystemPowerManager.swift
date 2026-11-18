@@ -175,8 +175,14 @@ public final class SystemPowerManager: PowerManaging {
         switch applied {
         case .empty:
             assertions.release()
+            // Re-read the real value: do not clear "uncertain" blindly.
+            guard let reader = reader, let actual = try? reader.readSleepDisabled() else {
+                uncertain = true
+                return false
+            }
+            externallyBlocked = actual
             uncertain = false
-            return true
+            return actual == false
         case .half:
             do {
                 try assertions.acquire()

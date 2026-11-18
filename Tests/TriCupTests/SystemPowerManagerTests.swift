@@ -237,6 +237,25 @@ final class SystemPowerManagerTests: XCTestCase {
         let system = makeSystem(assertions, FakeLid(), FakeReader())
         XCTAssertTrue(system.reassertCurrentState())
         XCTAssertGreaterThanOrEqual(assertions.releaseCount, 1)
+        XCTAssertFalse(system.uncertain)
+    }
+
+    func testReassertEmptyReadsActualSleepDisabled() {
+        let reader = FakeReader(); reader.value = true // external SleepDisabled still on
+        let system = makeSystem(FakeAssertions(), FakeLid(), reader)
+
+        XCTAssertFalse(system.reassertCurrentState())
+        XCTAssertTrue(system.externallyBlocked)
+        XCTAssertFalse(system.uncertain)
+    }
+
+    func testReassertEmptyUncertainWhenReaderFails() {
+        let reader = FakeReader(); reader.fail = true
+        let system = makeSystem(FakeAssertions(), FakeLid(), reader)
+        reader.fail = true
+
+        XCTAssertFalse(system.reassertCurrentState())
+        XCTAssertTrue(system.uncertain)
     }
 
     func testReassertHalfReacquiresAssertions() throws {
