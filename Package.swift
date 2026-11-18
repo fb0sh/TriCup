@@ -7,7 +7,8 @@ let package = Package(
         .macOS(.v15)
     ],
     products: [
-        .executable(name: "TriCup", targets: ["TriCup"])
+        .executable(name: "TriCup", targets: ["TriCup"]),
+        .executable(name: "TriCupHelper", targets: ["TriCupHelper"])
     ],
     targets: [
         .target(
@@ -19,6 +20,11 @@ let package = Package(
             dependencies: ["TriCupCore"],
             path: "Sources/TriCup",
             resources: [.process("Resources")]
+        ),
+        .executableTarget(
+            name: "TriCupHelper",
+            dependencies: ["TriCupCore"],
+            path: "Sources/TriCupHelper"
         ),
         .testTarget(
             name: "TriCupTests",
