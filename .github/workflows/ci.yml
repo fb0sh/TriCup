@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build, test and package
+    runs-on: macos-26
+    env:
+      TMPDIR: ${{ github.workspace }}/tmp/ci
+      TMP: ${{ github.workspace }}/tmp/ci
+      TEMP: ${{ github.workspace }}/tmp/ci
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create temp dir
+        run: mkdir -p "$TMPDIR"
+
+      - name: Show Swift version
+        run: swift --version
+
+      - name: Build
+        run: swift build -c debug --scratch-path tmp/.build
+
+      - name: Test
+        run: swift test --scratch-path tmp/.build
+
+      - name: Package (ad-hoc signed .app.zip)
+        run: bash scripts/package.sh
+
+      - name: Upload TriCup.app.zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: TriCup-app
+          path: tmp/build/TriCup.app.zip
+          if-no-files-found: error
+
+      - name: Publish release on tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" tmp/build/TriCup.app.zip \
+            --title "TriCup $GITHUB_REF_NAME" \
+            --notes "TriCup $GITHUB_REF_NAME (arm64, ad-hoc signed)." \
+            --verify-tag
