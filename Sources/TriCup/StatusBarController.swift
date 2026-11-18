@@ -74,8 +74,7 @@ final class StatusBarController: NSObject {
         if isRightClick {
             showMenu()
         } else {
-            _ = controller.cycle()
-            refresh()
+            applyChange { controller.cycle() }
         }
     }
 
@@ -87,7 +86,16 @@ final class StatusBarController: NSObject {
 
     @objc private func selectState(_ sender: NSMenuItem) {
         guard let state = CupState(rawValue: sender.tag) else { return }
-        _ = controller.setState(state)
+        applyChange { controller.setState(state) }
+    }
+
+    /// Applies a state change and always refreshes; logs any failure so the
+    /// icon keeps reflecting the actually-effective state.
+    private func applyChange(_ change: () -> Result<CupState, Error>) {
+        let result = change()
+        if case .failure(let error) = result {
+            NSLog("TriCup: failed to apply state change: %@", String(describing: error))
+        }
         refresh()
     }
 

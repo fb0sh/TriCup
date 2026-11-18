@@ -49,6 +49,21 @@ final class CupControllerTests: XCTestCase {
         XCTAssertTrue(power.applied.isEmpty)
     }
 
+    func testApplyingHalfFromEmptyAcquiresAwake() {
+        let power = RecordingPower()
+        let controller = CupController(power: power)
+        XCTAssertEqual(try? controller.setState(.half).get(), .half)
+        XCTAssertEqual(power.applied, [.half])
+    }
+
+    func testFailureApplyingHalfKeepsEmpty() {
+        let power = RecordingPower()
+        power.failOn = .half
+        let controller = CupController(power: power)
+        XCTAssertThrowsError(try controller.setState(.half).get())
+        XCTAssertEqual(controller.state, .empty)
+    }
+
     func testFailedTransitionKeepsPreviousState() {
         let power = RecordingPower()
         power.failOn = .full
