@@ -10,7 +10,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         let assertions = AssertionPowerManager()
         let lidClient = LidSleepClient()
-        let systemManager = SystemPowerManager(assertions: assertions, lid: lidClient)
+        let systemManager = SystemPowerManager(
+            assertions: assertions,
+            lid: lidClient,
+            reader: PMSetSleepStateReader()
+        )
         let controller = CupController(power: systemManager)
         let installer = HelperInstaller()
         let battery = BatteryMonitor()
@@ -21,11 +25,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             installer: installer,
             battery: battery,
             lowBatteryGuard: lowBatteryGuard,
-            loginItemManager: loginItemManager
+            loginItemManager: loginItemManager,
+            system: systemManager
         )
 
-        systemManager.onUnexpectedDisconnect = { [weak bar] _ in
-            bar?.handleUnexpectedDisconnect()
+        systemManager.onUnexpectedDisconnect = { [weak bar] _, uncertain in
+            bar?.handleUnexpectedDisconnect(uncertain: uncertain)
         }
 
         self.lid = lidClient

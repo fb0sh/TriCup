@@ -9,6 +9,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     private let battery: BatteryStatusProviding
     private let lowBatteryGuard: LowBatteryGuard
     private let loginItemManager: LoginItemManager
+    private let system: SystemPowerManager
     private let menu = NSMenu()
     private var stateItems: [NSMenuItem] = []
     private var uninstallItem: NSMenuItem?
@@ -19,13 +20,15 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         installer: HelperInstaller,
         battery: BatteryStatusProviding,
         lowBatteryGuard: LowBatteryGuard,
-        loginItemManager: LoginItemManager
+        loginItemManager: LoginItemManager,
+        system: SystemPowerManager
     ) {
         self.controller = controller
         self.installer = installer
         self.battery = battery
         self.lowBatteryGuard = lowBatteryGuard
         self.loginItemManager = loginItemManager
+        self.system = system
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         super.init()
         configureButton()
@@ -35,15 +38,23 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
     var currentState: CupState { controller.state }
 
-    /// Reconciles the UI after the helper connection dropped unexpectedly. The
-    /// power backend has already dropped to empty; this just reflects it.
-    func handleUnexpectedDisconnect() {
+    /// Reconciles the UI after the helper connection dropped unexpectedly. If we
+    /// could not confirm that sleep is allowed again, say so explicitly instead
+    /// of pretending everything is fine.
+    func handleUnexpectedDisconnect(uncertain: Bool) {
         controller.synchronize(to: .empty)
         refresh()
-        Notifier.shared.post(
-            title: "TriCup",
-            body: "与 Helper 的连接已断开，已退出满杯（合盖保护失效）。"
-        )
+        if uncertain {
+            showError(
+                "已退出满杯，但无法确认休眠已恢复",
+                "与 Helper 的连接已断开。请手动检查并恢复：\n\nsudo pmset -a disablesleep 0"
+            )
+        } else {
+            Notifier.shared.post(
+                title: "TriCup",
+                body: "与 Helper 的连接已断开，已退出满杯（合盖保护失效）。"
+            )
+        }
     }
 
     private func configureButton() {
@@ -110,7 +121,15 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             image.size = NSSize(width: 22, height: 20)
             button.image = image
         }
-        button.toolTip = "TriCup — \(controller.state.title)：\(controller.state.detail)"
+        button.toolTip = tooltip()
+    }
+
+    private func tooltip() -> String {
+        var text = "TriCup — \(controller.state.title)：\(controller.state.detail)"
+        if controller.state != .full && (system.externallyBlocked || system.uncertain) {
+            text += "（⚠︎ SleepDisabled 仍为 1 或无法确认，未保证允许休眠；如需恢复：sudo pmset -a disablesleep 0）"
+        }
+        return text
     }
 
     /// Loads the packaged PNG from the app bundle's Resources; falls back to an
@@ -198,12 +217,27 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     func evaluateLowBattery() {
         guard controller.state == .full else { return }
         guard lowBatteryGuard.shouldExitFull(battery.current()) else { return }
-        _ = controller.setState(.empty)
+
+        if case .failure(let error) = controller.setState(.empty) {
+            refresh()
+            showError(
+                "低电量，但无法退出满杯",
+                "\(error)\n\n请手动恢复休眠：\nsudo pmset -a disablesleep 0"
+            )
+            return
+        }
         refresh()
-        Notifier.shared.post(
-            title: "TriCup",
-            body: "电量 ≤\(lowBatteryGuard.threshold)%，已自动退出满杯。"
-        )
+        if system.externallyBlocked || system.uncertain {
+            showError(
+                "低电量已切空杯，但未确认休眠恢复",
+                "SleepDisabled 可能仍为 1。请手动恢复：\nsudo pmset -a disablesleep 0"
+            )
+        } else {
+            Notifier.shared.post(
+                title: "TriCup",
+                body: "电量 ≤\(lowBatteryGuard.threshold)%，已自动退出满杯。"
+            )
+        }
     }
 
     /// Applies a state change and always refreshes; logs any failure so the
@@ -265,9 +299,20 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     @objc private func quitSelected() {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
-            // Best-effort: returning to empty releases the lease before quitting.
             if self.controller.state != .empty {
-                _ = self.controller.setState(.empty)
+                if case .failure(let error) = self.controller.setState(.empty) {
+                    self.showError(
+                        "退出前无法恢复休眠，已取消退出",
+                        "\(error)\n\n请手动恢复：\nsudo pmset -a disablesleep 0"
+                    )
+                    return
+                }
+                if self.system.externallyBlocked || self.system.uncertain {
+                    self.showError(
+                        "退出前未确认休眠恢复",
+                        "SleepDisabled 可能仍为 1。退出后 Helper 会尝试恢复；如未恢复请手动执行：\nsudo pmset -a disablesleep 0"
+                    )
+                }
             }
             NSApp.terminate(nil)
         }

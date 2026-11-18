@@ -12,6 +12,7 @@ import TriCupCore
 final class LidSleepClient: LidSleepControlling {
     private let socketPath: String
     private var fd: Int32 = -1
+    private let ioTimeoutSeconds: Int = 3
 
     init(socketPath: String = HelperPaths.socketPath) {
         self.socketPath = socketPath
@@ -25,6 +26,9 @@ final class LidSleepClient: LidSleepControlling {
         if fd >= 0 && !checkAlive() {
             closeConnection()
         }
+        if fd >= 0, (try? leaseActive()) == true {
+            return // already holds the lease on this connection
+        }
         if fd < 0 {
             try open()
         }
@@ -37,7 +41,6 @@ final class LidSleepClient: LidSleepControlling {
             closeConnection()
             throw error
         }
-        // Keep the connection open; it represents the lease.
     }
 
     func disable() throws {
@@ -53,17 +56,25 @@ final class LidSleepClient: LidSleepControlling {
         guard fd >= 0 else { return false }
         var buffer = [UInt8](repeating: 0, count: 1)
         let result = recv(fd, &buffer, 1, Int32(MSG_PEEK) | Int32(MSG_DONTWAIT))
-        if result == 0 {
-            return false // peer closed the connection
-        }
+        if result == 0 { return false }
         if result < 0 {
             let code = errno
-            if code == EAGAIN || code == EWOULDBLOCK {
-                return true // no data waiting, connection alive
-            }
+            if code == EAGAIN || code == EWOULDBLOCK { return true }
             return false
         }
         return true
+    }
+
+    func leaseActive() throws -> Bool {
+        guard fd >= 0 else {
+            throw PowerError("helper not connected")
+        }
+        let response = try sendCommand("status")
+        switch response {
+        case "OK active": return true
+        case "OK inactive": return false
+        default: throw PowerError("unexpected status response: \(response)")
+        }
     }
 
     /// Connects with a few short retries so that immediately after an install
@@ -77,6 +88,7 @@ final class LidSleepClient: LidSleepControlling {
                 Thread.sleep(forTimeInterval: 0.1)
                 continue
             }
+            configure(handle)
 
             var addr = sockaddr_un()
             addr.sun_family = sa_family_t(AF_UNIX)
@@ -111,18 +123,35 @@ final class LidSleepClient: LidSleepControlling {
         throw PowerError("connect() failed: errno \(lastErrno)")
     }
 
+    /// Disables SIGPIPE on the socket (so writing to a dead peer cannot kill the
+    /// app) and sets read/write timeouts so the main thread can never block
+    /// forever on a wedged helper.
+    private func configure(_ handle: Int32) {
+        var on: Int32 = 1
+        setsockopt(handle, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
+
+        var timeout = timeval(tv_sec: ioTimeoutSeconds, tv_usec: 0)
+        setsockopt(handle, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+        setsockopt(handle, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+    }
+
     private func sendCommand(_ command: String) throws -> String {
         guard fd >= 0 else {
             throw PowerError("helper not connected")
         }
         let data = Data((command + "\n").utf8)
-        data.withUnsafeBytes { raw in
+        var offset = 0
+        try data.withUnsafeBytes { raw in
             guard let base = raw.baseAddress else { return }
-            var offset = 0
             while offset < raw.count {
                 let written = write(fd, base.advanced(by: offset), raw.count - offset)
-                if written <= 0 { break }
-                offset += written
+                if written > 0 {
+                    offset += written
+                } else if written < 0 && errno == EINTR {
+                    continue
+                } else {
+                    throw PowerError("write failed: errno \(errno)")
+                }
             }
         }
         guard let line = readLine() else {
@@ -140,10 +169,14 @@ final class LidSleepClient: LidSleepControlling {
                 return bytes.isEmpty ? nil : String(decoding: bytes, as: UTF8.self)
             }
             if count < 0 {
+                if errno == EINTR { continue }
                 return nil
             }
             if byte == 0x0A {
                 return String(decoding: bytes, as: UTF8.self)
+            }
+            if bytes.count >= 512 {
+                return nil // protocol responses are short; reject oversized
             }
             bytes.append(byte)
         }
