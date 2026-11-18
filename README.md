@@ -63,6 +63,16 @@
 
 更多设计细节见 [ADR-0001](docs/adr/0001-lid-close-privileged-helper.md)。
 
+## 稳定性与安全（Post-MVP 审核修复）
+
+- **电源恢复可验证**：半杯/空杯会强制释放合盖租约；释放失败会明确报错，绝不把状态伪装成"允许休眠"。每次切换后回读真实 `SleepDisabled`；无法确认时标记"不确定"并在悬停提示/弹窗给出 `sudo pmset -a disablesleep 0` 手动恢复指引。回滚失败也会显式报告。
+- **卸载安全**：仅当 `SleepDisabled` 确认为 0 且无活跃租约时才允许卸载 Helper；否则保留 Helper 与唯一租约恢复记录并提示手动恢复，避免丢失恢复能力。
+- **租约持久化严格化**：空文件 / 损坏 JSON / 不支持的版本都会报错并阻止新租约；仅在回读验证恢复成功后删除记录。
+- **Socket 健壮性**：SO_NOSIGPIPE 防止写已关闭连接杀死进程；处理 EINTR/部分读写/EOF；读写超时避免主线程无限阻塞；连接数上限与请求长度上限；写响应失败即断开并释放租约。
+- **pmset 严格解析**：`pmset -g` 缺失或格式异常一律报错（不再默认 false）；子进程 5 秒超时。
+- **电池状态区分**：读取失败与"无电池设备"不再伪装成 AC/100%；仅在有可用电池数据且 ≤20% 时触发保护。
+- **版本与产物**：`CFBundleShortVersionString` 从 tag 去除前缀 `v` 并强制为数字版本；CI 校验签名/资源/ZIP 完整性，并上传真正的 `TriCup.app.zip`（与 Release 一致）。CI 构建只读权限，仅 tag 发布任务具备写权限。
+
 ## 开发与 CI
 
 - SwiftPM + AppKit + IOKit + 独立 Privileged Helper。本地无需 Xcode/付费账号。

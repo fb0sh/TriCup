@@ -35,6 +35,7 @@ private final class FakeSleepSetting: SleepDisabledSetting {
 private final class MemoryLeaseStore: LeaseStoring {
     var record: LeaseRecord?
     var failSave = false
+    var failClear = false
     var loadError: Error?
 
     func load() throws -> LeaseRecord? {
@@ -47,7 +48,10 @@ private final class MemoryLeaseStore: LeaseStoring {
         self.record = record
     }
 
-    func clear() throws { record = nil }
+    func clear() throws {
+        if failClear { throw PowerError("clear failed") }
+        record = nil
+    }
 }
 
 final class LeaseManagerTests: XCTestCase {
@@ -292,5 +296,21 @@ final class LeaseManagerTests: XCTestCase {
         XCTAssertThrowsError(try manager.enable()) { error in
             XCTAssertEqual(error as? LeaseError, .alreadyActive)
         }
+    }
+
+    func testClearFailureIsSurfacedAndKeepsRecord() throws {
+        let setting = FakeSleepSetting(false)
+        let store = MemoryLeaseStore()
+        let manager = LeaseManager(setting: setting, store: store)
+        try manager.enable()
+
+        store.failClear = true
+        XCTAssertThrowsError(try manager.disable()) { error in
+            guard let leaseError = error as? LeaseError, case .persistenceFailed(_) = leaseError else {
+                return XCTFail("expected persistenceFailed, got \(error)")
+            }
+        }
+        XCTAssertFalse(setting.value, "sleep must still be restored even if clearing the record fails")
+        XCTAssertNotNil(store.record, "record must be kept when it cannot be cleared")
     }
 }
