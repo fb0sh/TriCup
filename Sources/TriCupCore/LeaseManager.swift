@@ -97,7 +97,8 @@ public final class LeaseManager {
         do {
             stored = try store.load()
         } catch {
-            return
+            // Do not report success when the persisted lease state is unknown.
+            throw LeaseError.persistenceFailed("cannot read lease before disable: \(error)")
         }
         if let stored = stored {
             try performRestore(stored)
@@ -106,7 +107,13 @@ public final class LeaseManager {
 
     /// On helper start (after a crash or reboot) restore any residual lease.
     public func recoverOnStartup() throws {
-        guard let record = try store.load() else {
+        let record: LeaseRecord?
+        do {
+            record = try store.load()
+        } catch {
+            throw LeaseError.persistenceFailed("cannot read residual lease on startup: \(error)")
+        }
+        guard let record = record else {
             activeRecord = nil
             return
         }

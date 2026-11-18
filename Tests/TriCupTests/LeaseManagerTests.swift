@@ -35,8 +35,12 @@ private final class FakeSleepSetting: SleepDisabledSetting {
 private final class MemoryLeaseStore: LeaseStoring {
     var record: LeaseRecord?
     var failSave = false
+    var loadError: Error?
 
-    func load() throws -> LeaseRecord? { record }
+    func load() throws -> LeaseRecord? {
+        if let loadError = loadError { throw loadError }
+        return record
+    }
 
     func save(_ record: LeaseRecord) throws {
         if failSave { throw PowerError("save failed") }
@@ -203,5 +207,74 @@ final class LeaseManagerTests: XCTestCase {
         XCTAssertEqual(try store.load()?.originalSleepDisabled, true)
         try store.clear()
         XCTAssertNil(try store.load())
+    }
+
+    func testDisableSurfacesStoreLoadError() {
+        let store = MemoryLeaseStore()
+        store.loadError = PowerError("read boom")
+        let manager = LeaseManager(setting: FakeSleepSetting(false), store: store)
+
+        XCTAssertThrowsError(try manager.disable()) { error in
+            guard let leaseError = error as? LeaseError, case .persistenceFailed(_) = leaseError else {
+                return XCTFail("expected persistenceFailed, got \(error)")
+            }
+        }
+    }
+
+    private func temporaryStore() -> (FileLeaseStore, URL, URL) {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("tricup-lease-\(UUID().uuidString)", isDirectory: true)
+        let url = dir.appendingPathComponent("lease.json")
+        return (FileLeaseStore(url: url), url, dir)
+    }
+
+    func testEmptyLeaseFileIsError() throws {
+        let (store, url, dir) = temporaryStore()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try Data().write(to: url)
+
+        XCTAssertThrowsError(try store.load()) { error in
+            guard let leaseError = error as? LeaseError, case .persistenceFailed(_) = leaseError else {
+                return XCTFail("expected persistenceFailed, got \(error)")
+            }
+        }
+    }
+
+    func testCorruptLeaseJSONIsError() throws {
+        let (store, url, dir) = temporaryStore()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try Data("{not valid json".utf8).write(to: url)
+
+        XCTAssertThrowsError(try store.load()) { error in
+            guard let leaseError = error as? LeaseError, case .persistenceFailed(_) = leaseError else {
+                return XCTFail("expected persistenceFailed, got \(error)")
+            }
+        }
+    }
+
+    func testUnsupportedLeaseVersionIsError() throws {
+        let (store, url, dir) = temporaryStore()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let json = #"{"originalSleepDisabled":false,"createdAt":0,"schemaVersion":99}"#
+        try Data(json.utf8).write(to: url)
+
+        XCTAssertThrowsError(try store.load()) { error in
+            guard let leaseError = error as? LeaseError, case .persistenceFailed(_) = leaseError else {
+                return XCTFail("expected persistenceFailed, got \(error)")
+            }
+        }
+    }
+
+    func testOriginalSleepDisabledTrueIsRestoredAsTrue() throws {
+        let setting = FakeSleepSetting(true)
+        let store = MemoryLeaseStore()
+        let manager = LeaseManager(setting: setting, store: store)
+        try manager.enable()
+        try manager.disable()
+        XCTAssertTrue(setting.value)
+        XCTAssertNil(store.record)
     }
 }

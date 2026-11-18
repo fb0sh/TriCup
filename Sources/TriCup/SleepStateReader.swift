@@ -5,7 +5,8 @@ import Darwin
 import TriCupCore
 
 /// App-side reader for the real system `SleepDisabled` value via `pmset -g`
-/// (read-only; never modifies power settings).
+/// (read-only; never modifies power settings). Parsing is strict and shared with
+/// the helper via `SleepDisabledParser`.
 final class PMSetSleepStateReader: SleepStateReading {
     private let pmsetPath = "/usr/bin/pmset"
 
@@ -20,25 +21,10 @@ final class PMSetSleepStateReader: SleepStateReading {
         try process.run()
         process.waitUntilExit()
         guard process.terminationStatus == 0 else {
-            throw PowerError("pmset -g exited \(process.terminationStatus)")
+            let message = String(decoding: errors.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            throw PowerError("pmset -g exited \(process.terminationStatus): \(message)")
         }
         let text = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-        return try PMSetSleepStateReader.parse(text)
-    }
-
-    /// Strictly parses `pmset -g`; missing or malformed values are errors, not
-    /// silently treated as false.
-    static func parse(_ text: String) throws -> Bool {
-        for line in text.split(separator: "\n") {
-            let parts = line.split(whereSeparator: { $0 == " " || $0 == "\t" })
-            if parts.count >= 2, parts[0] == "SleepDisabled" {
-                switch parts[1] {
-                case "1": return true
-                case "0": return false
-                default: throw PowerError("invalid SleepDisabled value: \(parts[1])")
-                }
-            }
-        }
-        throw PowerError("pmset -g did not report SleepDisabled")
+        return try SleepDisabledParser.parse(text)
     }
 }

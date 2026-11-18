@@ -17,10 +17,30 @@ public struct LeaseRecord: Codable, Equatable, Sendable {
     public let createdAt: Date
     public let schemaVersion: Int
 
+    public static let supportedSchemaVersion = 1
+
     public init(originalSleepDisabled: Bool, createdAt: Date = Date()) {
         self.originalSleepDisabled = originalSleepDisabled
         self.createdAt = createdAt
-        self.schemaVersion = 1
+        self.schemaVersion = LeaseRecord.supportedSchemaVersion
+    }
+}
+
+/// Strict parser for `pmset -g` output. Missing or malformed values throw; they
+/// are never silently treated as `false`.
+public enum SleepDisabledParser {
+    public static func parse(_ text: String) throws -> Bool {
+        for line in text.split(separator: "\n") {
+            let parts = line.split(whereSeparator: { $0 == " " || $0 == "\t" })
+            if parts.count >= 2, parts[0] == "SleepDisabled" {
+                switch parts[1] {
+                case "1": return true
+                case "0": return false
+                default: throw PowerError("invalid SleepDisabled value: \(parts[1])")
+                }
+            }
+        }
+        throw PowerError("pmset -g did not report SleepDisabled")
     }
 }
 
