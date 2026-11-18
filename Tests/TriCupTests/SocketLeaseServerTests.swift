@@ -20,6 +20,13 @@ private final class SocketMemoryStore: LeaseStoring {
 }
 
 final class SocketLeaseServerTests: XCTestCase {
+    override func setUp() {
+        super.setUp()
+        // Some tests intentionally write to a closed peer; never let that kill
+        // the test process with SIGPIPE.
+        signal(SIGPIPE, SIG_IGN)
+    }
+
     private func makeSocketPath() -> String {
         FileManager.default.temporaryDirectory
             .appendingPathComponent("tricup-\(UUID().uuidString.prefix(8)).sock")
@@ -29,6 +36,8 @@ final class SocketLeaseServerTests: XCTestCase {
     private func openConnection(_ path: String) -> Int32? {
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { return nil }
+        var on: Int32 = 1
+        setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
         var addr = sockaddr_un()
         addr.sun_family = sa_family_t(AF_UNIX)
         let bytes = Array(path.utf8)
