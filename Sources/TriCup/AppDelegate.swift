@@ -12,7 +12,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let lidClient = LidSleepClient()
         let systemManager = SystemPowerManager(assertions: assertions, lid: lidClient)
         let controller = CupController(power: systemManager)
-        let bar = StatusBarController(controller: controller)
+        let installer = HelperInstaller()
+        let bar = StatusBarController(controller: controller, installer: installer)
 
         systemManager.onUnexpectedDisconnect = { [weak bar] _ in
             bar?.handleUnexpectedDisconnect()

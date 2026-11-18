@@ -23,6 +23,7 @@ BIN_PATH="$(swift build -c "$CONFIG" --scratch-path "$SCRATCH" --show-bin-path)"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN_PATH/TriCup" "$APP/Contents/MacOS/TriCup"
+cp "$BIN_PATH/TriCupHelper" "$APP/Contents/MacOS/TriCupHelper"
 
 # Copy SwiftPM resource bundles (icons) next to the executable's bundle.
 shopt -s nullglob
@@ -35,7 +36,8 @@ sed -e "s/__VERSION__/${VERSION}/g" \
     -e "s/__BUILD__/${BUILD_NUMBER}/g" \
     "$ROOT/Info.plist" > "$APP/Contents/Info.plist"
 
-# Ad-hoc sign the executable, then the bundle, then verify.
+# Ad-hoc sign nested executables first, then the bundle, then verify.
+codesign --force --sign - "$APP/Contents/MacOS/TriCupHelper"
 codesign --force --sign - "$APP/Contents/MacOS/TriCup"
 codesign --force --sign - "$APP"
 codesign --verify --strict "$APP"

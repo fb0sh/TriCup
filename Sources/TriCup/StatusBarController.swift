@@ -5,16 +5,32 @@ import TriCupCore
 final class StatusBarController: NSObject {
     private let statusItem: NSStatusItem
     private let controller: CupController
+    private let installer: HelperInstaller
     private let menu = NSMenu()
     private var stateItems: [NSMenuItem] = []
+    private var uninstallItem: NSMenuItem?
 
-    init(controller: CupController) {
+    init(controller: CupController, installer: HelperInstaller) {
         self.controller = controller
+        self.installer = installer
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         super.init()
         configureButton()
         buildMenu()
         refresh()
+    }
+
+    var currentState: CupState { controller.state }
+
+    /// Reconciles the UI after the helper connection dropped unexpectedly. The
+    /// power backend has already dropped to empty; this just reflects it.
+    func handleUnexpectedDisconnect() {
+        controller.synchronize(to: .empty)
+        refresh()
+        Notifier.shared.post(
+            title: "TriCup",
+            body: "与 Helper 的连接已断开，已退出满杯（合盖保护失效）。"
+        )
     }
 
     private func configureButton() {
@@ -34,6 +50,17 @@ final class StatusBarController: NSObject {
             stateItems.append(item)
         }
         menu.addItem(.separator())
+
+        let uninstall = NSMenuItem(
+            title: "卸载 Helper…",
+            action: #selector(uninstallHelperSelected),
+            keyEquivalent: ""
+        )
+        uninstall.target = self
+        menu.addItem(uninstall)
+        uninstallItem = uninstall
+
+        menu.addItem(.separator())
         let quit = NSMenuItem(title: "退出 TriCup", action: #selector(quitSelected), keyEquivalent: "q")
         quit.target = self
         menu.addItem(quit)
@@ -42,6 +69,7 @@ final class StatusBarController: NSObject {
     private func refresh() {
         updateIcon()
         updateChecks()
+        uninstallItem?.isHidden = !installer.isInstalled
     }
 
     private func updateIcon() {
@@ -67,19 +95,6 @@ final class StatusBarController: NSObject {
         }
     }
 
-    var currentState: CupState { controller.state }
-
-    /// Reconciles the UI after the helper connection dropped unexpectedly. The
-    /// power backend has already dropped to empty; this just reflects it.
-    func handleUnexpectedDisconnect() {
-        controller.synchronize(to: .empty)
-        refresh()
-        Notifier.shared.post(
-            title: "TriCup",
-            body: "与 Helper 的连接已断开，已退出满杯（合盖保护失效）。"
-        )
-    }
-
     @objc private func handleClick(_ sender: Any?) {
         let event = NSApp.currentEvent
         let isRightClick = event?.type == .rightMouseUp
@@ -87,19 +102,34 @@ final class StatusBarController: NSObject {
         if isRightClick {
             showMenu()
         } else {
-            applyChange { controller.cycle() }
+            changeTo(controller.state.next)
         }
     }
 
     private func showMenu() {
-        updateChecks()
+        refresh()
         guard let button = statusItem.button else { return }
         _ = menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.height + 4), in: button)
     }
 
     @objc private func selectState(_ sender: NSMenuItem) {
         guard let state = CupState(rawValue: sender.tag) else { return }
-        applyChange { controller.setState(state) }
+        changeTo(state)
+    }
+
+    /// Installs the helper on first full-mode entry (one admin authorization),
+    /// then applies the change. Failure leaves the previous state untouched.
+    private func changeTo(_ target: CupState) {
+        if target == .full && !installer.isInstalled {
+            do {
+                try installer.install()
+            } catch {
+                Notifier.shared.post(title: "TriCup", body: "无法安装 Helper：\(error)")
+                refresh()
+                return
+            }
+        }
+        applyChange { controller.setState(target) }
     }
 
     /// Applies a state change and always refreshes; logs any failure so the
@@ -112,7 +142,30 @@ final class StatusBarController: NSObject {
         refresh()
     }
 
+    @objc private func uninstallHelperSelected() {
+        if controller.state == .full {
+            if case .failure(let error) = controller.setState(.empty) {
+                Notifier.shared.post(
+                    title: "TriCup",
+                    body: "无法恢复电源设置，已取消卸载 Helper：\(error)"
+                )
+                refresh()
+                return
+            }
+        }
+        do {
+            try installer.uninstall()
+        } catch {
+            Notifier.shared.post(title: "TriCup", body: "卸载 Helper 失败：\(error)")
+        }
+        refresh()
+    }
+
     @objc private func quitSelected() {
+        // Best-effort: returning to empty releases the lease before quitting.
+        if controller.state != .empty {
+            _ = controller.setState(.empty)
+        }
         NSApp.terminate(nil)
     }
 }
