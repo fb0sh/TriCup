@@ -8,12 +8,13 @@ import TriCupCore
 /// administrator authorization, using a generated shell script run through
 /// `do shell script`.
 ///
-/// Security (see ADR-0001): fixed absolute destinations, shell-quoted arguments,
-/// explicit root:wheel ownership/modes, symlink removal before writes, quarantine
-/// cleared only on the helper binary, and the script backs up/restores an existing
-/// installation if an upgrade fails. Upgrades and uninstall refuse while a lease
-/// record exists, and an `uninstalling` flag blocks new leases during the window.
-/// Gatekeeper is never disabled.
+/// Safety (see ADR-0001): fixed absolute destinations, shell-quoted arguments,
+/// explicit root:wheel ownership/modes, symlink removal before writes. Upgrade
+/// and uninstall acquire a shared `enable.lock` (atomic `mkdir`) so they wait for
+/// any in-flight lease enable, then set an `uninstalling` flag that makes the
+/// helper refuse new leases. They refuse while a lease record exists and never
+/// delete state while a recovery record may be needed. A failed `launchctl
+/// bootout` or install failure keeps/restores the previous helper and state.
 final class HelperInstaller {
     enum HelperStatus: Equatable {
         case notInstalled
@@ -91,8 +92,6 @@ final class HelperInstaller {
         return filesInstalled && launchDaemonLoaded() && socketExists && helperResponds()
     }
 
-    /// Confirms the helper is actually serving the protocol (not just that a
-    /// socket file exists).
     private func helperResponds() -> Bool {
         let handle = socket(AF_UNIX, SOCK_STREAM, 0)
         guard handle >= 0 else { return false }
@@ -198,48 +197,68 @@ final class HelperInstaller {
         SOURCE=\(shellQuote(helperSource))
         LEASE="$STATEDIR/lease.json"
         FLAG="$STATEDIR/uninstalling"
+        LOCKDIR="$STATEDIR/enable.lock"
         BAK_DST="$DST.tricupbak"
         BAK_PLIST="$PLIST.tricupbak"
         HAD_OLD=0
         SUCCESS=0
+        STARTED=0
+        LOCKED=0
         log() { /bin/echo "$*" >&2; }
         run() { log "+ $*"; "$@"; }
         cleanup_on_exit() {
             rc=$?
             trap - EXIT
-            /bin/rm -f "$FLAG"
+            if [ "$LOCKED" = "1" ]; then
+                /bin/rm -f "$FLAG"
+                /bin/rmdir "$LOCKDIR" 2>/dev/null || true
+            fi
             if [ "$SUCCESS" = "1" ]; then
                 /bin/rm -f "$BAK_DST" "$BAK_PLIST"
                 exit 0
             fi
             log "TRICUP_INSTALL_FAILED rc=$rc"
-            /bin/rm -f "$DST" "$PLIST"
-            if [ -f "$BAK_DST" ]; then /bin/mv "$BAK_DST" "$DST"; fi
-            if [ -f "$BAK_PLIST" ]; then /bin/mv "$BAK_PLIST" "$PLIST"; fi
-            if [ "$HAD_OLD" = "1" ] && [ -f "$PLIST" ]; then
-                /bin/launchctl bootstrap system "$PLIST" 2>/dev/null || true
+            if [ "$STARTED" = "1" ]; then
+                /bin/rm -f "$DST" "$PLIST"
+                if [ -f "$BAK_DST" ]; then /bin/mv "$BAK_DST" "$DST"; fi
+                if [ -f "$BAK_PLIST" ]; then /bin/mv "$BAK_PLIST" "$PLIST"; fi
+                if [ "$HAD_OLD" = "1" ] && [ -f "$PLIST" ]; then
+                    /bin/launchctl bootstrap system "$PLIST" 2>/dev/null || true
+                fi
             fi
             exit $rc
         }
 
         /bin/mkdir -p "$STATEDIR"
         /bin/chmod 0700 "$STATEDIR" 2>/dev/null || true
+        trap cleanup_on_exit EXIT
+
+        i=0
+        while ! /bin/mkdir "$LOCKDIR" 2>/dev/null; do
+            i=$((i+1))
+            if [ "$i" -ge 50 ]; then log "TRICUP_INSTALL_REFUSED: enable lock timeout"; exit 5; fi
+            /bin/sleep 0.1
+        done
+        LOCKED=1
+        (umask 077; : > "$FLAG")
+
         if [ -f "$LEASE" ]; then
             log "TRICUP_INSTALL_REFUSED: residual lease record present"
             exit 4
         fi
-        (umask 077; : > "$FLAG")
-        trap cleanup_on_exit EXIT
 
         if [ -f "$DST" ]; then /bin/cp -p "$DST" "$BAK_DST"; fi
         if [ -f "$PLIST" ]; then /bin/cp -p "$PLIST" "$BAK_PLIST"; HAD_OLD=1; fi
+        STARTED=1
 
         if [ -f "$LEASE" ]; then
             log "TRICUP_INSTALL_REFUSED: lease appeared during upgrade"
             exit 4
         fi
 
-        /bin/launchctl bootout "system/$LABEL" 2>/dev/null || true
+        if /bin/launchctl print "system/$LABEL" >/dev/null 2>&1; then
+            run /bin/launchctl bootout "system/$LABEL"
+        fi
 
         run /bin/mkdir -p /Library/PrivilegedHelperTools
         if [ -L "$DST" ]; then /bin/rm -f "$DST"; fi
@@ -277,22 +296,44 @@ final class HelperInstaller {
         STATEDIR=\(shellQuote(HelperPaths.helperDirectory))
         LEASE="$STATEDIR/lease.json"
         FLAG="$STATEDIR/uninstalling"
+        LOCKDIR="$STATEDIR/enable.lock"
+        LOCKED=0
         log() { /bin/echo "$*" >&2; }
+        cleanup_on_exit() {
+            rc=$?
+            trap - EXIT
+            if [ "$LOCKED" = "1" ]; then
+                /bin/rm -f "$FLAG"
+                /bin/rmdir "$LOCKDIR" 2>/dev/null || true
+            fi
+            exit $rc
+        }
 
         /bin/mkdir -p "$STATEDIR"
         /bin/chmod 0700 "$STATEDIR" 2>/dev/null || true
+        trap cleanup_on_exit EXIT
+
+        i=0
+        while ! /bin/mkdir "$LOCKDIR" 2>/dev/null; do
+            i=$((i+1))
+            if [ "$i" -ge 50 ]; then log "TRICUP_UNINSTALL_REFUSED: enable lock timeout"; exit 5; fi
+            /bin/sleep 0.1
+        done
+        LOCKED=1
         (umask 077; : > "$FLAG")
 
-        # Root-side authoritative check: an existing lease record means the
-        # original SleepDisabled was not confirmed restored. Refuse and keep
-        # everything (fail closed).
         if [ -f "$LEASE" ]; then
             log "TRICUP_UNINSTALL_REFUSED: residual lease record present; keeping helper and state"
-            /bin/rm -f "$FLAG"
             exit 3
         fi
 
-        /bin/launchctl bootout "system/$LABEL" 2>/dev/null || true
+        if /bin/launchctl print "system/$LABEL" >/dev/null 2>&1; then
+            if ! /bin/launchctl bootout "system/$LABEL"; then
+                log "TRICUP_UNINSTALL_REFUSED: launchctl bootout failed; keeping files"
+                exit 6
+            fi
+        fi
+
         /bin/rm -f "$PLIST"
         /bin/rm -f "$DST"
         /bin/rm -rf "$STATEDIR"

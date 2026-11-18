@@ -8,7 +8,8 @@ import TriCupCore
 ///
 /// The open connection *is* the lease: it is kept alive for as long as full mode
 /// is active, and closing it (or the helper dying) restores the original power
-/// setting on the helper side.
+/// setting on the helper side. Read-only status queries use a short-lived,
+/// independent connection so they work even when no lease connection is open.
 final class LidSleepClient: LidSleepControlling {
     private let socketPath: String
     private var fd: Int32 = -1
@@ -30,10 +31,10 @@ final class LidSleepClient: LidSleepControlling {
             return // already holds the lease on this connection
         }
         if fd < 0 {
-            try open()
+            fd = try connectWithRetry()
         }
         do {
-            let response = try sendCommand("enable")
+            let response = try sendCommand("enable", on: fd)
             guard response == "OK enabled" else {
                 throw PowerError("helper enable failed: \(response)")
             }
@@ -46,7 +47,7 @@ final class LidSleepClient: LidSleepControlling {
     func disable() throws {
         guard fd >= 0 else { return }
         defer { closeConnection() }
-        let response = try sendCommand("disable")
+        let response = try sendCommand("disable", on: fd)
         guard response == "OK disabled" else {
             throw PowerError("helper disable failed: \(response)")
         }
@@ -65,11 +66,20 @@ final class LidSleepClient: LidSleepControlling {
         return true
     }
 
+    /// Queries the helper's lease state. Uses the existing lease connection when
+    /// present, otherwise opens a short-lived read-only connection so an idle
+    /// (empty) app is not mistaken for an unreachable helper.
     func leaseActive() throws -> Bool {
-        guard fd >= 0 else {
-            throw PowerError("helper not connected")
+        if fd >= 0 {
+            return try queryStatus(on: fd)
         }
-        let response = try sendCommand("status")
+        let temporary = try connectWithRetry()
+        defer { close(temporary) }
+        return try queryStatus(on: temporary)
+    }
+
+    private func queryStatus(on handle: Int32) throws -> Bool {
+        let response = try sendCommand("status", on: handle)
         switch response {
         case "OK active": return true
         case "OK inactive": return false
@@ -79,7 +89,7 @@ final class LidSleepClient: LidSleepControlling {
 
     /// Connects with a few short retries so that immediately after an install
     /// (helper still starting under launchd) the first enable can succeed.
-    private func open() throws {
+    private func connectWithRetry() throws -> Int32 {
         var lastErrno: Int32 = 0
         for _ in 0..<20 {
             let handle = socket(AF_UNIX, SOCK_STREAM, 0)
@@ -113,8 +123,7 @@ final class LidSleepClient: LidSleepControlling {
                 }
             }
             if result == 0 {
-                fd = handle
-                return
+                return handle
             }
             lastErrno = errno
             close(handle)
@@ -123,9 +132,8 @@ final class LidSleepClient: LidSleepControlling {
         throw PowerError("connect() failed: errno \(lastErrno)")
     }
 
-    /// Disables SIGPIPE on the socket (so writing to a dead peer cannot kill the
-    /// app) and sets read/write timeouts so the main thread can never block
-    /// forever on a wedged helper.
+    /// Disables SIGPIPE and sets read/write timeouts so the main thread can never
+    /// block forever on a wedged helper.
     private func configure(_ handle: Int32) {
         var on: Int32 = 1
         setsockopt(handle, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
@@ -135,8 +143,8 @@ final class LidSleepClient: LidSleepControlling {
         setsockopt(handle, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
     }
 
-    private func sendCommand(_ command: String) throws -> String {
-        guard fd >= 0 else {
+    private func sendCommand(_ command: String, on handle: Int32) throws -> String {
+        guard handle >= 0 else {
             throw PowerError("helper not connected")
         }
         let data = Data((command + "\n").utf8)
@@ -144,7 +152,7 @@ final class LidSleepClient: LidSleepControlling {
         try data.withUnsafeBytes { raw in
             guard let base = raw.baseAddress else { return }
             while offset < raw.count {
-                let written = write(fd, base.advanced(by: offset), raw.count - offset)
+                let written = write(handle, base.advanced(by: offset), raw.count - offset)
                 if written > 0 {
                     offset += written
                 } else if written < 0 && errno == EINTR {
@@ -154,17 +162,17 @@ final class LidSleepClient: LidSleepControlling {
                 }
             }
         }
-        guard let line = readLine() else {
+        guard let line = readLine(on: handle) else {
             throw PowerError("helper gave no response")
         }
         return line
     }
 
-    private func readLine() -> String? {
+    private func readLine(on handle: Int32) -> String? {
         var bytes = [UInt8]()
         var byte: UInt8 = 0
         while true {
-            let count = read(fd, &byte, 1)
+            let count = read(handle, &byte, 1)
             if count == 0 {
                 return bytes.isEmpty ? nil : String(decoding: bytes, as: UTF8.self)
             }
@@ -176,7 +184,7 @@ final class LidSleepClient: LidSleepControlling {
                 return String(decoding: bytes, as: UTF8.self)
             }
             if bytes.count >= 512 {
-                return nil // protocol responses are short; reject oversized
+                return nil
             }
             bytes.append(byte)
         }

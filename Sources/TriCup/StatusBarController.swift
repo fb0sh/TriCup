@@ -318,7 +318,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
                 self.refresh()
                 return
             }
-            if leaseActive {
+            if !UninstallSafety.canUninstall(leaseActive: leaseActive, hasResidualRecord: false) {
                 self.showError(
                     "暂不能卸载 Helper",
                     "存在活跃租约，已取消卸载。请先退出满杯。"

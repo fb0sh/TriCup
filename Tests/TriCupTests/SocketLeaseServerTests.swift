@@ -191,4 +191,93 @@ final class SocketLeaseServerTests: XCTestCase {
         XCTAssertEqual(readLine(again), "OK inactive")
         close(again)
     }
+
+    func testEnableRejectedWhenUninstallingFlagPresent() throws {
+        let path = makeSocketPath()
+        let flag = FileManager.default.temporaryDirectory
+            .appendingPathComponent("tricup-flag-\(UUID().uuidString)").path
+        FileManager.default.createFile(atPath: flag, contents: Data())
+        defer { try? FileManager.default.removeItem(atPath: flag) }
+
+        let setting = SocketFakeSetting(false)
+        let manager = LeaseManager(setting: setting, store: SocketMemoryStore())
+        let server = SocketLeaseServer(
+            socketPath: path,
+            manager: manager,
+            uninstallingFlagPath: flag
+        ) { _ in true }
+        try server.start()
+        defer { server.stop() }
+
+        guard let fd = openConnection(path) else { return XCTFail("could not connect") }
+        send(fd, "enable")
+        XCTAssertEqual(readLine(fd), "ERR uninstalling")
+        XCTAssertFalse(setting.value)
+        close(fd)
+    }
+
+    func testEnableRefusedWhileMaintenanceLockHeld() throws {
+        let path = makeSocketPath()
+        let lockDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("tricup-lock-\(UUID().uuidString)").path
+        XCTAssertEqual(mkdir(lockDir, 0o700), 0)
+        defer { rmdir(lockDir) }
+
+        let setting = SocketFakeSetting(false)
+        let manager = LeaseManager(setting: setting, store: SocketMemoryStore())
+        let server = SocketLeaseServer(
+            socketPath: path,
+            manager: manager,
+            enableLockDirectory: lockDir,
+            enableLockTimeout: 0.2
+        ) { _ in true }
+        try server.start()
+        defer { server.stop() }
+
+        guard let fd = openConnection(path) else { return XCTFail("could not connect") }
+        send(fd, "enable")
+        XCTAssertEqual(readLine(fd), "ERR busy")
+        XCTAssertFalse(setting.value)
+        close(fd)
+    }
+
+    func testIdleNonLeaseConnectionTimesOut() throws {
+        let path = makeSocketPath()
+        let setting = SocketFakeSetting(false)
+        let manager = LeaseManager(setting: setting, store: SocketMemoryStore())
+        let server = SocketLeaseServer(
+            socketPath: path,
+            manager: manager,
+            idleTimeoutSeconds: 1
+        ) { _ in true }
+        try server.start()
+        defer { server.stop() }
+
+        guard let fd = openConnection(path) else { return XCTFail("could not connect") }
+        Thread.sleep(forTimeInterval: 1.6)
+        send(fd, "status")
+        XCTAssertNotEqual(readLine(fd), "OK inactive", "idle non-lease connection should be closed")
+        close(fd)
+    }
+
+    func testLeaseConnectionSurvivesIdleTimeout() throws {
+        let path = makeSocketPath()
+        let setting = SocketFakeSetting(false)
+        let manager = LeaseManager(setting: setting, store: SocketMemoryStore())
+        let server = SocketLeaseServer(
+            socketPath: path,
+            manager: manager,
+            idleTimeoutSeconds: 1
+        ) { _ in true }
+        try server.start()
+        defer { server.stop() }
+
+        guard let fd = openConnection(path) else { return XCTFail("could not connect") }
+        send(fd, "enable")
+        XCTAssertEqual(readLine(fd), "OK enabled")
+        Thread.sleep(forTimeInterval: 1.6) // longer than the idle timeout
+        send(fd, "status")
+        XCTAssertEqual(readLine(fd), "OK active", "lease connection must survive idle timeout")
+        close(fd)
+    }
 }

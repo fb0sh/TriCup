@@ -23,9 +23,15 @@ public final class SocketLeaseServer {
     private let ownerProvider: (() -> uid_t?)?
     private let mode: mode_t
     private let maxClients = 8
-    /// Idle timeout for connections that do NOT hold a lease. A connection that
-    /// holds the full lease is allowed to stay idle indefinitely.
-    private let idleTimeoutSeconds: Int = 15
+    /// Idle timeout for connections that do NOT hold a lease. A lease connection
+    /// is set to no read timeout and may idle indefinitely.
+    private let idleTimeoutSeconds: Int
+    /// Optional cross-process lock directory shared with the root install/uninstall
+    /// scripts to serialize enabling against maintenance.
+    private let enableLockDirectory: String?
+    private let enableLockTimeout: TimeInterval
+    private let uninstallingFlagPath: String
+
     private let lock = NSLock()
     private var listenFD: Int32 = -1
     private var running = false
@@ -39,6 +45,10 @@ public final class SocketLeaseServer {
         ownerUID: uid_t? = nil,
         ownerProvider: (() -> uid_t?)? = nil,
         mode: mode_t = 0o600,
+        idleTimeoutSeconds: Int = 15,
+        enableLockDirectory: String? = nil,
+        enableLockTimeout: TimeInterval = 2.0,
+        uninstallingFlagPath: String = HelperPaths.uninstallingFlagPath,
         validatePeer: @escaping PeerValidator
     ) {
         self.socketPath = socketPath
@@ -46,6 +56,10 @@ public final class SocketLeaseServer {
         self.ownerUID = ownerUID
         self.ownerProvider = ownerProvider
         self.mode = mode
+        self.idleTimeoutSeconds = idleTimeoutSeconds
+        self.enableLockDirectory = enableLockDirectory
+        self.enableLockTimeout = enableLockTimeout
+        self.uninstallingFlagPath = uninstallingFlagPath
         self.validatePeer = validatePeer
     }
 
@@ -137,9 +151,6 @@ public final class SocketLeaseServer {
 
     // MARK: - Accept loop
 
-    /// Keeps the socket owned by the current console user, so that after a
-    /// reboot (where the daemon starts as root before login) the logged-in user
-    /// can still connect. The socket stays mode 0600.
     private func ownershipLoop() {
         while running {
             if let provider = ownerProvider, let uid = provider(), uid != lastOwner {
@@ -160,7 +171,7 @@ public final class SocketLeaseServer {
             }
             if clientFD < 0 {
                 if !running { break }
-                continue // includes EINTR
+                continue
             }
 
             lock.lock()
@@ -168,7 +179,7 @@ public final class SocketLeaseServer {
             if !overloaded { activeClients += 1 }
             lock.unlock()
             if overloaded {
-                close(clientFD) // refuse without writing (avoids SIGPIPE)
+                close(clientFD)
                 continue
             }
 
@@ -212,19 +223,40 @@ public final class SocketLeaseServer {
             let command = line.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             switch command {
             case "enable":
-                if FileManager.default.fileExists(atPath: HelperPaths.uninstallingFlagPath) {
+                if maintenanceBlocked() {
                     if !writeLine(fd, "ERR uninstalling\n") { break clientLoop }
                     continue
                 }
                 lock.lock()
+                guard acquireEnableLock() else {
+                    lock.unlock()
+                    if !writeLine(fd, "ERR busy\n") { break clientLoop }
+                    continue
+                }
+                // Re-check after acquiring the lock: maintenance may have begun.
+                if maintenanceBlocked() {
+                    releaseEnableLock()
+                    lock.unlock()
+                    if !writeLine(fd, "ERR uninstalling\n") { break clientLoop }
+                    continue
+                }
                 do {
                     try manager.enable()
                     holdsLease = true
+                    releaseEnableLock()
                     lock.unlock()
-                    // A lease connection may idle indefinitely.
-                    _ = setReadTimeout(fd, seconds: 0)
+                    // A lease connection must never inherit the idle timeout.
+                    if !setReadTimeout(fd, seconds: 0) {
+                        lock.lock()
+                        try? manager.disable()
+                        holdsLease = false
+                        lock.unlock()
+                        _ = writeLine(fd, "ERR timeout_policy\n")
+                        break clientLoop
+                    }
                     if !writeLine(fd, "OK enabled\n") { break clientLoop }
                 } catch {
+                    releaseEnableLock()
                     lock.unlock()
                     if !writeLine(fd, "ERR \(SocketLeaseServer.describe(error))\n") { break clientLoop }
                 }
@@ -249,6 +281,35 @@ public final class SocketLeaseServer {
                 if !writeLine(fd, "ERR unknown_command\n") { break clientLoop }
             }
         }
+    }
+
+    private func maintenanceBlocked() -> Bool {
+        FileManager.default.fileExists(atPath: uninstallingFlagPath)
+    }
+
+    /// Cross-process mutual exclusion with the root install/uninstall scripts,
+    /// implemented with an atomic `mkdir` lock directory. Returns false on
+    /// timeout so the caller can refuse the enable.
+    private func acquireEnableLock() -> Bool {
+        guard let directory = enableLockDirectory else { return true }
+        let parent = (directory as NSString).deletingLastPathComponent
+        try? FileManager.default.createDirectory(atPath: parent, withIntermediateDirectories: true)
+        let deadline = Date().addingTimeInterval(enableLockTimeout)
+        while Date() < deadline {
+            if mkdir(directory, mode_t(0o700)) == 0 {
+                return true
+            }
+            if errno != EEXIST {
+                return false
+            }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        return false
+    }
+
+    private func releaseEnableLock() {
+        guard let directory = enableLockDirectory else { return }
+        rmdir(directory)
     }
 
     private func setReadTimeout(_ fd: Int32, seconds: Int) -> Bool {
@@ -313,7 +374,7 @@ private func readLine(_ fd: Int32) -> String? {
             continue
         }
         if bytes.count >= 512 {
-            return nil // reject oversized/abusive requests
+            return nil
         }
         bytes.append(byte)
     }

@@ -23,7 +23,8 @@ do {
 let server = SocketLeaseServer(
     socketPath: HelperPaths.socketPath,
     manager: manager,
-    ownerProvider: { ConsoleUser.uid() }
+    ownerProvider: { ConsoleUser.uid() },
+    enableLockDirectory: HelperPaths.helperDirectory + "/enable.lock"
 ) { peer in
     // Validate against the *current* console user on every connection, so this
     // keeps working across boot/login and fast user switching.
