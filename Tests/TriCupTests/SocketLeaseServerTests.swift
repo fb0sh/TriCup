@@ -26,7 +26,7 @@ final class SocketLeaseServerTests: XCTestCase {
             .path
     }
 
-    private func connect(_ path: String) -> Int32? {
+    private func openConnection(_ path: String) -> Int32? {
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { return nil }
         var addr = sockaddr_un()
@@ -86,7 +86,7 @@ final class SocketLeaseServerTests: XCTestCase {
         try server.start()
         defer { server.stop() }
 
-        guard let fd = connect(path) else {
+        guard let fd = openConnection(path) else {
             return XCTFail("could not connect to \(path)")
         }
 
@@ -108,7 +108,7 @@ final class SocketLeaseServerTests: XCTestCase {
         try server.start()
         defer { server.stop() }
 
-        guard let fd = connect(path) else {
+        guard let fd = openConnection(path) else {
             return XCTFail("could not connect")
         }
 
@@ -137,7 +137,7 @@ final class SocketLeaseServerTests: XCTestCase {
         try server.start()
         defer { server.stop() }
 
-        guard let first = connect(path), let second = connect(path) else {
+        guard let first = openConnection(path), let second = openConnection(path) else {
             return XCTFail("could not connect")
         }
         defer { close(first); close(second) }
