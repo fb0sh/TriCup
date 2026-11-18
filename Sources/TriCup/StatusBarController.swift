@@ -103,13 +103,28 @@ final class StatusBarController: NSObject {
         case .half: name = "half"
         case .full: name = "full"
         }
-        if let url = Bundle.module.url(forResource: name, withExtension: "png"),
-           let image = NSImage(contentsOf: url) {
+        if let image = iconImage(for: name) {
             image.isTemplate = true
             image.size = NSSize(width: 22, height: 20)
             button.image = image
         }
         button.toolTip = "TriCup — \(controller.state.title)：\(controller.state.detail)"
+    }
+
+    /// Loads the packaged PNG from the app bundle's Resources; falls back to an
+    /// SF Symbol when the resource is unavailable (e.g. `swift run`).
+    private func iconImage(for name: String) -> NSImage? {
+        if let url = Bundle.main.url(forResource: name, withExtension: "png"),
+           let image = NSImage(contentsOf: url) {
+            return image
+        }
+        let symbol: String
+        switch name {
+        case "empty": symbol = "cup.and.saucer"
+        case "half": symbol = "cup.and.saucer.fill"
+        default: symbol = "cup.and.saucer.fill"
+        }
+        return NSImage(systemSymbolName: symbol, accessibilityDescription: name)
     }
 
     private func updateChecks() {

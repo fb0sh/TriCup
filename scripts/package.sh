@@ -29,16 +29,33 @@ if [ ! -f "$APP/Contents/MacOS/TriCupHelper" ]; then
     exit 1
 fi
 
-# Copy SwiftPM resource bundles (icons) next to the executable's bundle.
-shopt -s nullglob
-for bundle in "$BIN_PATH"/*.bundle; do
-    cp -R "$bundle" "$APP/Contents/Resources/"
-done
-shopt -u nullglob
+# Copy menu-bar icons and app icon directly into Contents/Resources. The app
+# loads these via Bundle.main (NOT Bundle.module), so no SwiftPM resource bundle
+# is produced or copied.
+cp "$ROOT/Resources/empty.png" "$APP/Contents/Resources/empty.png"
+cp "$ROOT/Resources/half.png" "$APP/Contents/Resources/half.png"
+cp "$ROOT/Resources/full.png" "$APP/Contents/Resources/full.png"
+cp "$ROOT/Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 
 sed -e "s/__VERSION__/${VERSION}/g" \
     -e "s/__BUILD__/${BUILD_NUMBER}/g" \
     "$ROOT/Info.plist" > "$APP/Contents/Info.plist"
+
+# Integrity check: catch packaging regressions before signing.
+for required in \
+    "Contents/MacOS/TriCup" \
+    "Contents/MacOS/TriCupHelper" \
+    "Contents/Info.plist" \
+    "Contents/Resources/empty.png" \
+    "Contents/Resources/half.png" \
+    "Contents/Resources/full.png" \
+    "Contents/Resources/AppIcon.icns"
+do
+    if [ ! -e "$APP/$required" ]; then
+        echo "error: missing $required" >&2
+        exit 1
+    fi
+done
 
 # Ad-hoc sign nested executables first, then the bundle, then verify.
 codesign --force --sign - "$APP/Contents/MacOS/TriCupHelper"

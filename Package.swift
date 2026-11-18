@@ -18,8 +18,7 @@ let package = Package(
         .executableTarget(
             name: "TriCup",
             dependencies: ["TriCupCore"],
-            path: "Sources/TriCup",
-            resources: [.process("Resources")]
+            path: "Sources/TriCup"
         ),
         .executableTarget(
             name: "TriCupHelper",

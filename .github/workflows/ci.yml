@@ -37,6 +37,33 @@ jobs:
           BUILD_NUMBER: ${{ github.run_number }}
         run: bash scripts/package.sh
 
+      - name: Verify app bundle resources
+        run: |
+          APP="tmp/build/TriCup.app"
+          for f in \
+            "Contents/MacOS/TriCup" \
+            "Contents/MacOS/TriCupHelper" \
+            "Contents/Info.plist" \
+            "Contents/Resources/empty.png" \
+            "Contents/Resources/half.png" \
+            "Contents/Resources/full.png" \
+            "Contents/Resources/AppIcon.icns"
+          do
+            test -e "$APP/$f" || { echo "MISSING $f"; exit 1; }
+          done
+          if [ -e "$APP/Contents/Resources/TriCup_TriCup.bundle" ] || [ -e "$APP/TriCup_TriCup.bundle" ]; then
+            echo "unexpected SwiftPM resource bundle present"; exit 1
+          fi
+          /usr/bin/plutil -lint "$APP/Contents/Info.plist"
+
+      - name: Smoke test from isolated path
+        run: |
+          ISOLATED="$RUNNER_TEMP/tricup-smoke"
+          rm -rf "$ISOLATED"
+          mkdir -p "$ISOLATED"
+          cp -R "tmp/build/TriCup.app" "$ISOLATED/"
+          "$ISOLATED/TriCup.app/Contents/MacOS/TriCup" --self-test
+
       - name: Upload TriCup.app.zip
         uses: actions/upload-artifact@v4
         with:
