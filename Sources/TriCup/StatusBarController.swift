@@ -67,6 +67,19 @@ final class StatusBarController: NSObject {
         }
     }
 
+    var currentState: CupState { controller.state }
+
+    /// Reconciles the UI after the helper connection dropped unexpectedly. The
+    /// power backend has already dropped to empty; this just reflects it.
+    func handleUnexpectedDisconnect() {
+        controller.synchronize(to: .empty)
+        refresh()
+        Notifier.shared.post(
+            title: "TriCup",
+            body: "与 Helper 的连接已断开，已退出满杯（合盖保护失效）。"
+        )
+    }
+
     @objc private func handleClick(_ sender: Any?) {
         let event = NSApp.currentEvent
         let isRightClick = event?.type == .rightMouseUp

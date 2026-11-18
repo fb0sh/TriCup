@@ -20,6 +20,12 @@ public final class CupController {
         setState(state.next)
     }
 
+    /// Set the state without applying power effects. Used to reconcile the UI
+    /// after an external event (e.g. a helper disconnect) already changed power.
+    public func synchronize(to newState: CupState) {
+        state = newState
+    }
+
     /// Attempt to move to `desired`. On failure the current state is unchanged.
     @discardableResult
     public func setState(_ desired: CupState) -> Result<CupState, Error> {
