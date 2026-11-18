@@ -6,13 +6,22 @@ final class StatusBarController: NSObject {
     private let statusItem: NSStatusItem
     private let controller: CupController
     private let installer: HelperInstaller
+    private let battery: BatteryStatusProviding
+    private let lowBatteryGuard: LowBatteryGuard
     private let menu = NSMenu()
     private var stateItems: [NSMenuItem] = []
     private var uninstallItem: NSMenuItem?
 
-    init(controller: CupController, installer: HelperInstaller) {
+    init(
+        controller: CupController,
+        installer: HelperInstaller,
+        battery: BatteryStatusProviding,
+        lowBatteryGuard: LowBatteryGuard
+    ) {
         self.controller = controller
         self.installer = installer
+        self.battery = battery
+        self.lowBatteryGuard = lowBatteryGuard
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         super.init()
         configureButton()
@@ -120,6 +129,14 @@ final class StatusBarController: NSObject {
     /// Installs the helper on first full-mode entry (one admin authorization),
     /// then applies the change. Failure leaves the previous state untouched.
     private func changeTo(_ target: CupState) {
+        if target == .full && lowBatteryGuard.blocksFull(battery.current()) {
+            Notifier.shared.post(
+                title: "TriCup",
+                body: "电量 ≤\(lowBatteryGuard.threshold)%，未进入满杯。"
+            )
+            refresh()
+            return
+        }
         if target == .full && !installer.isInstalled {
             do {
                 try installer.install()
@@ -130,6 +147,19 @@ final class StatusBarController: NSObject {
             }
         }
         applyChange { controller.setState(target) }
+    }
+
+    /// Called periodically: if we are full and the battery has dropped to the
+    /// threshold on battery power, exit to empty and notify.
+    func evaluateLowBattery() {
+        guard controller.state == .full else { return }
+        guard lowBatteryGuard.shouldExitFull(battery.current()) else { return }
+        _ = controller.setState(.empty)
+        refresh()
+        Notifier.shared.post(
+            title: "TriCup",
+            body: "电量 ≤\(lowBatteryGuard.threshold)%，已自动退出满杯。"
+        )
     }
 
     /// Applies a state change and always refreshes; logs any failure so the

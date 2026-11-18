@@ -13,7 +13,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let systemManager = SystemPowerManager(assertions: assertions, lid: lidClient)
         let controller = CupController(power: systemManager)
         let installer = HelperInstaller()
-        let bar = StatusBarController(controller: controller, installer: installer)
+        let battery = BatteryMonitor()
+        let lowBatteryGuard = LowBatteryGuard()
+        let bar = StatusBarController(
+            controller: controller,
+            installer: installer,
+            battery: battery,
+            lowBatteryGuard: lowBatteryGuard
+        )
 
         systemManager.onUnexpectedDisconnect = { [weak bar] _ in
             bar?.handleUnexpectedDisconnect()
@@ -34,6 +41,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// empty and never re-acquires the lease automatically.
     private func checkFullModeHealth() {
         guard let system = system, let lid = lid, let bar = statusBar else { return }
+        bar.evaluateLowBattery()
         if bar.currentState == .full && !lid.checkAlive() {
             system.handleLidDisconnect()
         }
