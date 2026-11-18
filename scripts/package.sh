@@ -14,7 +14,7 @@ APP="$BUILD_OUT/TriCup.app"
 
 RAW_VERSION="${VERSION:-$(git describe --tags --always 2>/dev/null || echo 0.0.0-dev)}"
 VERSION="${RAW_VERSION#v}"
-if ! /usr/bin/printf '%s' "$VERSION" | grep -Eq '^[0-9]+(\.[0-9]+){0,2}$'; then
+if ! /usr/bin/printf '%s' "$VERSION" | grep -Eq '^[0-9]+(\.[0-9]+){1,2}$'; then
     VERSION="0.0.0"
 fi
 BUILD_NUMBER="${BUILD_NUMBER:-0}"
