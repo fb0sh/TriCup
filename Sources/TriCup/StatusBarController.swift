@@ -283,6 +283,24 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
     /// Shows a modal alert so install/enable failures are not missed (system
     /// notifications may be suppressed).
+    /// Called after system wake: refresh UI, apply low-battery policy, and warn
+    /// (once) if sleep is still blocked or the state could not be confirmed.
+    func handleWake() {
+        refresh()
+        evaluateLowBattery()
+        if controller.state != .full && (system.externallyBlocked || system.uncertain) {
+            if !warnedSleepBlocked {
+                warnedSleepBlocked = true
+                showError(
+                    "唤醒后休眠状态异常",
+                    "SleepDisabled 仍为 1 或无法确认。请手动恢复：\nsudo pmset -a disablesleep 0"
+                )
+            }
+        } else if !system.externallyBlocked && !system.uncertain {
+            warnedSleepBlocked = false
+        }
+    }
+
     private func showError(_ title: String, _ message: String) {
         let alert = NSAlert()
         alert.alertStyle = .warning

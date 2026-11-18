@@ -21,6 +21,7 @@ private final class FakeLid: LidSleepControlling {
     var failEnable = false
     var failDisable = false
     var alive = true
+    var leaseQueryFails = false
 
     func enable() throws {
         enableCount += 1
@@ -36,7 +37,10 @@ private final class FakeLid: LidSleepControlling {
 
     func checkAlive() -> Bool { alive }
 
-    func leaseActive() throws -> Bool { enabled }
+    func leaseActive() throws -> Bool {
+        if leaseQueryFails { throw PowerError("query failed") }
+        return enabled
+    }
 }
 
 private final class FakeReader: SleepStateReading {
@@ -224,5 +228,90 @@ final class SystemPowerManagerTests: XCTestCase {
         }
         system.handleLidDisconnect()
         XCTAssertTrue(system.uncertain)
+    }
+
+    // MARK: - Wake re-assert
+
+    func testReassertEmptyReleasesAssertions() {
+        let assertions = FakeAssertions()
+        let system = makeSystem(assertions, FakeLid(), FakeReader())
+        XCTAssertTrue(system.reassertCurrentState())
+        XCTAssertGreaterThanOrEqual(assertions.releaseCount, 1)
+    }
+
+    func testReassertHalfReacquiresAssertions() throws {
+        let assertions = FakeAssertions()
+        let reader = FakeReader(); reader.value = false
+        let system = makeSystem(assertions, FakeLid(), reader)
+        try system.apply(.half)
+        let before = assertions.acquireCount
+
+        XCTAssertTrue(system.reassertCurrentState())
+        XCTAssertEqual(system.applied, .half)
+        XCTAssertGreaterThan(assertions.acquireCount, before)
+        XCTAssertFalse(system.uncertain)
+    }
+
+    func testReassertFullKeepsLeaseWithoutReEnable() throws {
+        let assertions = FakeAssertions()
+        let lid = FakeLid()
+        let reader = FakeReader(); reader.value = true
+        let system = makeSystem(assertions, lid, reader)
+        try system.apply(.full)
+        let enableBefore = lid.enableCount
+        let acquireBefore = assertions.acquireCount
+
+        XCTAssertTrue(system.reassertCurrentState())
+        XCTAssertEqual(system.applied, .full)
+        XCTAssertEqual(lid.enableCount, enableBefore, "must not create a new lease on wake")
+        XCTAssertGreaterThan(assertions.acquireCount, acquireBefore)
+    }
+
+    func testReassertFullDegradesWhenLeaseLost() throws {
+        let lid = FakeLid()
+        let reader = FakeReader(); reader.value = true
+        let system = makeSystem(FakeAssertions(), lid, reader)
+        try system.apply(.full)
+        let enableBefore = lid.enableCount
+
+        lid.enabled = false
+        reader.value = false
+        var notified = false
+        system.onUnexpectedDisconnect = { state, _ in
+            notified = true
+            XCTAssertEqual(state, .empty)
+        }
+
+        XCTAssertFalse(system.reassertCurrentState())
+        XCTAssertEqual(system.applied, .empty)
+        XCTAssertEqual(lid.enableCount, enableBefore, "must not auto re-acquire on wake")
+        XCTAssertTrue(notified)
+    }
+
+    func testReassertFullDegradesWhenLeaseQueryFails() throws {
+        let lid = FakeLid()
+        let reader = FakeReader(); reader.value = true
+        let system = makeSystem(FakeAssertions(), lid, reader)
+        try system.apply(.full)
+        let enableBefore = lid.enableCount
+
+        lid.leaseQueryFails = true
+        reader.value = false
+        XCTAssertFalse(system.reassertCurrentState())
+        XCTAssertEqual(system.applied, .empty)
+        XCTAssertEqual(lid.enableCount, enableBefore)
+    }
+
+    func testReassertIsIdempotent() throws {
+        let lid = FakeLid()
+        let reader = FakeReader(); reader.value = true
+        let system = makeSystem(FakeAssertions(), lid, reader)
+        try system.apply(.full)
+        let enableBefore = lid.enableCount
+
+        _ = system.reassertCurrentState()
+        _ = system.reassertCurrentState()
+        XCTAssertEqual(system.applied, .full)
+        XCTAssertEqual(lid.enableCount, enableBefore)
     }
 }

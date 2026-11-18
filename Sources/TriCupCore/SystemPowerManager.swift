@@ -166,6 +166,52 @@ public final class SystemPowerManager: PowerManaging {
         return true
     }
 
+    /// Re-applies the current state's power effects after system wake. Idempotent
+    /// and never acquires a new closed-lid lease: full is kept only if the lease
+    /// is still active, otherwise it degrades to empty (no auto re-lock).
+    /// Returns true when the state is confirmed effective.
+    @discardableResult
+    public func reassertCurrentState() -> Bool {
+        switch applied {
+        case .empty:
+            assertions.release()
+            uncertain = false
+            return true
+        case .half:
+            do {
+                try assertions.acquire()
+            } catch {
+                uncertain = true
+                return false
+            }
+            if let reader = reader, let actual = try? reader.readSleepDisabled() {
+                externallyBlocked = actual
+                uncertain = false
+                return actual == false
+            }
+            uncertain = true
+            return false
+        case .full:
+            guard helperLeaseActive() == true else {
+                handleLidDisconnect()
+                return false
+            }
+            do {
+                try assertions.acquire()
+            } catch {
+                uncertain = true
+                return false
+            }
+            if let reader = reader, let actual = try? reader.readSleepDisabled() {
+                externallyBlocked = false
+                uncertain = (actual == false)
+                return actual
+            }
+            uncertain = true
+            return false
+        }
+    }
+
     /// Called by the app when the helper connection is lost while full.
     /// Drops to `.empty` and never re-acquires the lease. If we cannot confirm
     /// that sleep is allowed again, `uncertain` is set for the UI to surface.

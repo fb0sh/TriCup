@@ -6,6 +6,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var system: SystemPowerManager?
     private var lid: LidSleepClient?
     private var healthTimer: Timer?
+    private var wakeObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let assertions = AssertionPowerManager()
@@ -42,6 +43,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         healthTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             self?.checkFullModeHealth()
         }
+
+        // Re-apply the current state after the system wakes from sleep, so a
+        // half/full choice keeps working without the user re-selecting it.
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.handleWake()
+        }
+    }
+
+    private func handleWake() {
+        guard let system = system, let bar = statusBar else { return }
+        _ = system.reassertCurrentState()
+        bar.handleWake()
     }
 
     /// While full, poll the helper connection; a dead helper forces a drop to
