@@ -70,7 +70,7 @@ final class LidSleepClient: LidSleepControlling {
     /// (helper still starting under launchd) the first enable can succeed.
     private func open() throws {
         var lastErrno: Int32 = 0
-        for _ in 0..<5 {
+        for _ in 0..<20 {
             let handle = socket(AF_UNIX, SOCK_STREAM, 0)
             guard handle >= 0 else {
                 lastErrno = errno

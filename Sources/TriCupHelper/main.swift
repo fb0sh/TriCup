@@ -20,16 +20,15 @@ do {
     NSLog("TriCupHelper: residual lease recovery failed: %@", String(describing: error))
 }
 
-let ownerUID = ConsoleUser.uid()
 let server = SocketLeaseServer(
     socketPath: HelperPaths.socketPath,
     manager: manager,
-    ownerUID: ownerUID
+    ownerProvider: { ConsoleUser.uid() }
 ) { peer in
-    if let owner = ownerUID, peer.uid != owner {
-        return false
-    }
-    return true
+    // Validate against the *current* console user on every connection, so this
+    // keeps working across boot/login and fast user switching.
+    guard let owner = ConsoleUser.uid() else { return false }
+    return peer.uid == owner
 }
 
 do {

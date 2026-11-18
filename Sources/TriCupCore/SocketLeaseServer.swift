@@ -20,22 +20,26 @@ public final class SocketLeaseServer {
     private let manager: LeaseManager
     private let validatePeer: PeerValidator
     private let ownerUID: uid_t?
+    private let ownerProvider: (() -> uid_t?)?
     private let mode: mode_t
     private let lock = NSLock()
     private var listenFD: Int32 = -1
     private var running = false
     private var acceptThread: Thread?
+    private var lastOwner: uid_t?
 
     public init(
         socketPath: String = HelperPaths.socketPath,
         manager: LeaseManager,
         ownerUID: uid_t? = nil,
+        ownerProvider: (() -> uid_t?)? = nil,
         mode: mode_t = 0o600,
         validatePeer: @escaping PeerValidator
     ) {
         self.socketPath = socketPath
         self.manager = manager
         self.ownerUID = ownerUID
+        self.ownerProvider = ownerProvider
         self.mode = mode
         self.validatePeer = validatePeer
     }
@@ -47,6 +51,11 @@ public final class SocketLeaseServer {
         thread.name = "TriCupHelper.accept"
         acceptThread = thread
         thread.start()
+        if ownerProvider != nil {
+            let ownership = Thread { [weak self] in self?.ownershipLoop() }
+            ownership.name = "TriCupHelper.ownership"
+            ownership.start()
+        }
     }
 
     public func stop() {
@@ -99,8 +108,9 @@ public final class SocketLeaseServer {
         }
 
         chmod(socketPath, mode)
-        if let owner = ownerUID {
+        if let owner = ownerProvider?() ?? ownerUID {
             chown(socketPath, owner, gid_t.max)
+            lastOwner = owner
         }
 
         guard listen(fd, 16) == 0 else {
@@ -113,6 +123,20 @@ public final class SocketLeaseServer {
     }
 
     // MARK: - Accept loop
+
+    /// Keeps the socket owned by the current console user, so that after a
+    /// reboot (where the daemon starts as root before login) the logged-in user
+    /// can still connect. The socket stays mode 0600.
+    private func ownershipLoop() {
+        while running {
+            if let provider = ownerProvider, let uid = provider(), uid != lastOwner {
+                chown(socketPath, uid, gid_t.max)
+                chmod(socketPath, mode)
+                lastOwner = uid
+            }
+            Thread.sleep(forTimeInterval: 2.0)
+        }
+    }
 
     private func acceptLoop() {
         while running {
