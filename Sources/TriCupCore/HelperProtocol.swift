@@ -8,6 +8,7 @@ import Darwin
 public enum HelperPaths {
     public static let socketPath = "/var/run/com.fb0sh.tricup.sock"
     public static let leaseFilePath = "/Library/Application Support/TriCup/lease.json"
+    public static let uninstallingFlagPath = "/Library/Application Support/TriCup/uninstalling"
     public static let helperDirectory = "/Library/Application Support/TriCup"
     public static let helperBinaryPath = "/Library/PrivilegedHelperTools/com.fb0sh.tricup.helper"
     public static let launchDaemonPlistPath = "/Library/LaunchDaemons/com.fb0sh.tricup.helper.plist"

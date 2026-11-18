@@ -23,6 +23,9 @@ public final class SocketLeaseServer {
     private let ownerProvider: (() -> uid_t?)?
     private let mode: mode_t
     private let maxClients = 8
+    /// Idle timeout for connections that do NOT hold a lease. A connection that
+    /// holds the full lease is allowed to stay idle indefinitely.
+    private let idleTimeoutSeconds: Int = 15
     private let lock = NSLock()
     private var listenFD: Int32 = -1
     private var running = false
@@ -179,7 +182,8 @@ public final class SocketLeaseServer {
 
     private func handleClient(_ fd: Int32) {
         var nosigpipe: Int32 = 1
-        setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &nosigpipe, socklen_t(MemoryLayout<Int32>.size))
+        let noSigPipeOK = setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &nosigpipe, socklen_t(MemoryLayout<Int32>.size)) == 0
+        let timeoutOK = setReadTimeout(fd, seconds: idleTimeoutSeconds)
 
         defer {
             lock.lock()
@@ -187,6 +191,8 @@ public final class SocketLeaseServer {
             lock.unlock()
             close(fd)
         }
+
+        guard noSigPipeOK, timeoutOK else { return }
 
         guard let peer = peerInfo(fd: fd), validatePeer(peer) else {
             _ = writeLine(fd, "ERR unauthorized\n")
@@ -206,11 +212,17 @@ public final class SocketLeaseServer {
             let command = line.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             switch command {
             case "enable":
+                if FileManager.default.fileExists(atPath: HelperPaths.uninstallingFlagPath) {
+                    if !writeLine(fd, "ERR uninstalling\n") { break clientLoop }
+                    continue
+                }
                 lock.lock()
                 do {
                     try manager.enable()
                     holdsLease = true
                     lock.unlock()
+                    // A lease connection may idle indefinitely.
+                    _ = setReadTimeout(fd, seconds: 0)
                     if !writeLine(fd, "OK enabled\n") { break clientLoop }
                 } catch {
                     lock.unlock()
@@ -222,6 +234,7 @@ public final class SocketLeaseServer {
                     try manager.disable()
                     holdsLease = false
                     lock.unlock()
+                    _ = setReadTimeout(fd, seconds: idleTimeoutSeconds)
                     if !writeLine(fd, "OK disabled\n") { break clientLoop }
                 } catch {
                     lock.unlock()
@@ -236,6 +249,11 @@ public final class SocketLeaseServer {
                 if !writeLine(fd, "ERR unknown_command\n") { break clientLoop }
             }
         }
+    }
+
+    private func setReadTimeout(_ fd: Int32, seconds: Int) -> Bool {
+        var timeout = timeval(tv_sec: seconds, tv_usec: 0)
+        return setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size)) == 0
     }
 
     private func peerInfo(fd: Int32) -> HelperPeerInfo? {
@@ -285,6 +303,7 @@ private func readLine(_ fd: Int32) -> String? {
         }
         if readCount < 0 {
             if errno == EINTR { continue }
+            // EAGAIN/EWOULDBLOCK => idle timeout: drop this (non-lease) connection.
             return nil
         }
         if byte == 0x0A {

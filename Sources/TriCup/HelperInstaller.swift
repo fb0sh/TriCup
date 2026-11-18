@@ -4,14 +4,16 @@ import Darwin
 #endif
 import TriCupCore
 
-/// Installs and removes the privileged helper via a single administrator
-/// authorization, using a generated shell script run through `do shell script`.
+/// Installs, upgrades and removes the privileged helper via a single
+/// administrator authorization, using a generated shell script run through
+/// `do shell script`.
 ///
-/// Security (see ADR-0001): fixed absolute destinations, argument values
-/// shell-quoted, ownership/mode set explicitly, symlink targets removed before
-/// writing, quarantine cleared only on the helper binary, and the script backs up
-/// and restores an existing installation if an upgrade fails (so a failed install
-/// never breaks a working helper or its lease). Gatekeeper is never disabled.
+/// Security (see ADR-0001): fixed absolute destinations, shell-quoted arguments,
+/// explicit root:wheel ownership/modes, symlink removal before writes, quarantine
+/// cleared only on the helper binary, and the script backs up/restores an existing
+/// installation if an upgrade fails. Upgrades and uninstall refuse while a lease
+/// record exists, and an `uninstalling` flag blocks new leases during the window.
+/// Gatekeeper is never disabled.
 final class HelperInstaller {
     enum HelperStatus: Equatable {
         case notInstalled
@@ -22,7 +24,6 @@ final class HelperInstaller {
 
     private let fileManager = FileManager.default
 
-    /// Installed means the files exist AND the LaunchDaemon is actually loaded.
     var isInstalled: Bool {
         filesInstalled && launchDaemonLoaded()
     }
@@ -54,7 +55,7 @@ final class HelperInstaller {
         }
         try runPrivileged(makeInstallScript(helperSource: source))
         guard waitUntilReady() else {
-            throw PowerError("Helper 安装后未就绪（文件 / LaunchDaemon / Socket 校验失败）")
+            throw PowerError("Helper 安装后未就绪（文件 / LaunchDaemon / Socket / 协议响应校验失败）")
         }
     }
 
@@ -91,7 +92,7 @@ final class HelperInstaller {
     }
 
     /// Confirms the helper is actually serving the protocol (not just that a
-    /// socket file exists). Used to validate a completed install.
+    /// socket file exists).
     private func helperResponds() -> Bool {
         let handle = socket(AF_UNIX, SOCK_STREAM, 0)
         guard handle >= 0 else { return false }
@@ -156,8 +157,6 @@ final class HelperInstaller {
         try? fileManager.removeItem(at: logURL)
         try? fileManager.removeItem(at: statusURL)
 
-        // Redirect all script output to a log and record the exit status, so we
-        // can surface the exact failing step/exit code/stderr on failure.
         let command = "/bin/sh \(shellQuote(scriptURL.path))"
             + " > \(shellQuote(logURL.path)) 2>&1"
             + "; /usr/bin/printf '%s' $? > \(shellQuote(statusURL.path))"
@@ -197,6 +196,8 @@ final class HelperInstaller {
         PLIST=\(shellQuote(HelperPaths.launchDaemonPlistPath))
         STATEDIR=\(shellQuote(HelperPaths.helperDirectory))
         SOURCE=\(shellQuote(helperSource))
+        LEASE="$STATEDIR/lease.json"
+        FLAG="$STATEDIR/uninstalling"
         BAK_DST="$DST.tricupbak"
         BAK_PLIST="$PLIST.tricupbak"
         HAD_OLD=0
@@ -206,6 +207,7 @@ final class HelperInstaller {
         cleanup_on_exit() {
             rc=$?
             trap - EXIT
+            /bin/rm -f "$FLAG"
             if [ "$SUCCESS" = "1" ]; then
                 /bin/rm -f "$BAK_DST" "$BAK_PLIST"
                 exit 0
@@ -219,10 +221,23 @@ final class HelperInstaller {
             fi
             exit $rc
         }
+
+        /bin/mkdir -p "$STATEDIR"
+        /bin/chmod 0700 "$STATEDIR" 2>/dev/null || true
+        if [ -f "$LEASE" ]; then
+            log "TRICUP_INSTALL_REFUSED: residual lease record present"
+            exit 4
+        fi
+        (umask 077; : > "$FLAG")
         trap cleanup_on_exit EXIT
 
         if [ -f "$DST" ]; then /bin/cp -p "$DST" "$BAK_DST"; fi
         if [ -f "$PLIST" ]; then /bin/cp -p "$PLIST" "$BAK_PLIST"; HAD_OLD=1; fi
+
+        if [ -f "$LEASE" ]; then
+            log "TRICUP_INSTALL_REFUSED: lease appeared during upgrade"
+            exit 4
+        fi
 
         /bin/launchctl bootout "system/$LABEL" 2>/dev/null || true
 
@@ -260,7 +275,23 @@ final class HelperInstaller {
         PLIST=\(shellQuote(HelperPaths.launchDaemonPlistPath))
         DST=\(shellQuote(HelperPaths.helperBinaryPath))
         STATEDIR=\(shellQuote(HelperPaths.helperDirectory))
+        LEASE="$STATEDIR/lease.json"
+        FLAG="$STATEDIR/uninstalling"
         log() { /bin/echo "$*" >&2; }
+
+        /bin/mkdir -p "$STATEDIR"
+        /bin/chmod 0700 "$STATEDIR" 2>/dev/null || true
+        (umask 077; : > "$FLAG")
+
+        # Root-side authoritative check: an existing lease record means the
+        # original SleepDisabled was not confirmed restored. Refuse and keep
+        # everything (fail closed).
+        if [ -f "$LEASE" ]; then
+            log "TRICUP_UNINSTALL_REFUSED: residual lease record present; keeping helper and state"
+            /bin/rm -f "$FLAG"
+            exit 3
+        fi
+
         /bin/launchctl bootout "system/$LABEL" 2>/dev/null || true
         /bin/rm -f "$PLIST"
         /bin/rm -f "$DST"

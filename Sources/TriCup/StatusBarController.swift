@@ -278,22 +278,21 @@ final class StatusBarController: NSObject, NSMenuDelegate {
                 }
             }
 
-            // Only uninstall when sleep is genuinely allowed again and no lease
-            // is active, so we never delete the only recovery record.
-            let actual = self.system.currentSleepDisabled()
-            if actual != false {
-                let detail: String
-                if actual == true {
-                    detail = "SleepDisabled 仍为 1（可能残留或由其它程序设置）。已保留 Helper 与租约记录。请先手动执行：\nsudo pmset -a disablesleep 0\n确认后再卸载。"
-                } else {
-                    detail = "无法确认当前休眠状态，已取消卸载。请先手动执行 sudo pmset -a disablesleep 0 并确认后重试。"
-                }
-                self.showError("暂不能卸载 Helper", detail)
+            // Fail closed: only uninstall when the helper positively confirms no
+            // active lease. Unknown/nil (helper unreachable) is treated as unsafe.
+            guard let leaseActive = self.system.helperLeaseActive() else {
+                self.showError(
+                    "暂不能卸载 Helper",
+                    "无法确认 Helper 租约状态（连接不可用）。已按安全策略拒绝卸载并保留 Helper 与恢复记录。请确保 Helper 正常运行并已退出满杯后重试。"
+                )
                 self.refresh()
                 return
             }
-            if self.system.helperLeaseActive() == true {
-                self.showError("暂不能卸载 Helper", "检测到活跃租约，已取消卸载。请先退出满杯。")
+            if leaseActive {
+                self.showError(
+                    "暂不能卸载 Helper",
+                    "存在活跃租约，已取消卸载。请先退出满杯。"
+                )
                 self.refresh()
                 return
             }
