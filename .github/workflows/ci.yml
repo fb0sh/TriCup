@@ -25,6 +25,15 @@ jobs:
       - name: Show Swift version
         run: swift --version
 
+      - name: Verify hardcoded system command paths exist
+        run: |
+          for p in \
+            /bin/sh /bin/launchctl /bin/mkdir /bin/cp /bin/mv /bin/rm /bin/chmod \
+            /usr/bin/printf /usr/bin/xattr /usr/sbin/chown /usr/bin/pmset /usr/bin/plutil
+          do
+            test -x "$p" || { echo "MISSING $p"; exit 1; }
+          done
+
       - name: Build
         run: swift build -c debug --scratch-path tmp/.build
 
@@ -64,11 +73,11 @@ jobs:
           cp -R "tmp/build/TriCup.app" "$ISOLATED/"
           "$ISOLATED/TriCup.app/Contents/MacOS/TriCup" --self-test
 
-      - name: Upload TriCup.app.zip
+      - name: Upload TriCup.app (single-level artifact)
         uses: actions/upload-artifact@v4
         with:
           name: TriCup-app
-          path: tmp/build/TriCup.app.zip
+          path: tmp/build/TriCup.app
           if-no-files-found: error
 
       - name: Publish release on tag

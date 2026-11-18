@@ -170,7 +170,8 @@ final class StatusBarController: NSObject {
             do {
                 try installer.install()
             } catch {
-                Notifier.shared.post(title: "TriCup", body: "无法安装 Helper：\(error)")
+                NSLog("TriCup: helper install failed: %@", String(describing: error))
+                showError("无法安装 Helper", "\(error)")
                 refresh()
                 return
             }
@@ -197,8 +198,21 @@ final class StatusBarController: NSObject {
         let result = change()
         if case .failure(let error) = result {
             NSLog("TriCup: failed to apply state change: %@", String(describing: error))
+            showError("无法切换状态", "\(error)")
         }
         refresh()
+    }
+
+    /// Shows a modal alert so install/enable failures are not missed (system
+    /// notifications may be suppressed).
+    private func showError(_ title: String, _ message: String) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = title
+        alert.informativeText = message
+        alert.addButton(withTitle: "好")
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
     }
 
     @objc private func uninstallHelperSelected() {
@@ -215,7 +229,8 @@ final class StatusBarController: NSObject {
         do {
             try installer.uninstall()
         } catch {
-            Notifier.shared.post(title: "TriCup", body: "卸载 Helper 失败：\(error)")
+            NSLog("TriCup: helper uninstall failed: %@", String(describing: error))
+            showError("卸载 Helper 失败", "\(error)")
         }
         refresh()
     }
