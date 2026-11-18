@@ -24,6 +24,10 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN_PATH/TriCup" "$APP/Contents/MacOS/TriCup"
 cp "$BIN_PATH/TriCupHelper" "$APP/Contents/MacOS/TriCupHelper"
+if [ ! -f "$APP/Contents/MacOS/TriCupHelper" ]; then
+    echo "error: TriCupHelper missing from bundle" >&2
+    exit 1
+fi
 
 # Copy SwiftPM resource bundles (icons) next to the executable's bundle.
 shopt -s nullglob

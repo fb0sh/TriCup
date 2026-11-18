@@ -22,12 +22,20 @@ final class LidSleepClient: LidSleepControlling {
     }
 
     func enable() throws {
+        if fd >= 0 && !checkAlive() {
+            closeConnection()
+        }
         if fd < 0 {
             try open()
         }
-        let response = try sendCommand("enable")
-        guard response == "OK enabled" else {
-            throw PowerError("helper enable failed: \(response)")
+        do {
+            let response = try sendCommand("enable")
+            guard response == "OK enabled" else {
+                throw PowerError("helper enable failed: \(response)")
+            }
+        } catch {
+            closeConnection()
+            throw error
         }
         // Keep the connection open; it represents the lease.
     }
@@ -58,40 +66,49 @@ final class LidSleepClient: LidSleepControlling {
         return true
     }
 
+    /// Connects with a few short retries so that immediately after an install
+    /// (helper still starting under launchd) the first enable can succeed.
     private func open() throws {
-        let handle = socket(AF_UNIX, SOCK_STREAM, 0)
-        guard handle >= 0 else {
-            throw PowerError("socket() failed: errno \(errno)")
-        }
-
-        var addr = sockaddr_un()
-        addr.sun_family = sa_family_t(AF_UNIX)
-        let bytes = Array(socketPath.utf8)
-        let capacity = MemoryLayout.size(ofValue: addr.sun_path)
-        guard bytes.count < capacity else {
-            close(handle)
-            throw PowerError("socket path too long")
-        }
-        withUnsafeMutableBytes(of: &addr.sun_path) { raw in
-            let base = raw.bindMemory(to: UInt8.self)
-            for (index, value) in bytes.enumerated() {
-                base[index] = value
+        var lastErrno: Int32 = 0
+        for _ in 0..<5 {
+            let handle = socket(AF_UNIX, SOCK_STREAM, 0)
+            guard handle >= 0 else {
+                lastErrno = errno
+                Thread.sleep(forTimeInterval: 0.1)
+                continue
             }
-            base[bytes.count] = 0
-        }
 
-        let length = socklen_t(MemoryLayout<sockaddr_un>.size)
-        let result = withUnsafePointer(to: &addr) { pointer in
-            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                connect(handle, $0, length)
+            var addr = sockaddr_un()
+            addr.sun_family = sa_family_t(AF_UNIX)
+            let bytes = Array(socketPath.utf8)
+            let capacity = MemoryLayout.size(ofValue: addr.sun_path)
+            guard bytes.count < capacity else {
+                close(handle)
+                throw PowerError("socket path too long")
             }
-        }
-        guard result == 0 else {
-            let code = errno
+            withUnsafeMutableBytes(of: &addr.sun_path) { raw in
+                let base = raw.bindMemory(to: UInt8.self)
+                for (index, value) in bytes.enumerated() {
+                    base[index] = value
+                }
+                base[bytes.count] = 0
+            }
+
+            let length = socklen_t(MemoryLayout<sockaddr_un>.size)
+            let result = withUnsafePointer(to: &addr) { pointer in
+                pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                    connect(handle, $0, length)
+                }
+            }
+            if result == 0 {
+                fd = handle
+                return
+            }
+            lastErrno = errno
             close(handle)
-            throw PowerError("connect() failed: errno \(code)")
+            Thread.sleep(forTimeInterval: 0.1)
         }
-        fd = handle
+        throw PowerError("connect() failed: errno \(lastErrno)")
     }
 
     private func sendCommand(_ command: String) throws -> String {

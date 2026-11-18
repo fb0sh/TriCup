@@ -32,6 +32,9 @@ jobs:
         run: swift test --scratch-path tmp/.build
 
       - name: Package (ad-hoc signed .app.zip)
+        env:
+          VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+          BUILD_NUMBER: ${{ github.run_number }}
         run: bash scripts/package.sh
 
       - name: Upload TriCup.app.zip
