@@ -12,6 +12,10 @@ SCRATCH="$ROOT/tmp/.build"
 BUILD_OUT="$ROOT/tmp/build"
 APP="$BUILD_OUT/TriCup.app"
 
+# Artifact architecture label (arm64 / x64). The build itself is native to the
+# host runner, so no cross-compilation flags are used.
+ARCH="${ARCH:-$(uname -m)}"
+
 RAW_VERSION="${VERSION:-$(git describe --tags --always 2>/dev/null || echo 0.0.0-dev)}"
 VERSION="${RAW_VERSION#v}"
 if ! /usr/bin/printf '%s' "$VERSION" | grep -Eq '^[0-9]+(\.[0-9]+){1,2}$'; then
@@ -84,5 +88,19 @@ if ! unzip -l "$ZIP" | grep -q "TriCup.app/Contents/MacOS/TriCup"; then
     exit 1
 fi
 
+# Build a compressed DMG with a drag-to-/Applications layout.
+DMG="$BUILD_OUT/TriCup-${ARCH}.dmg"
+STAGE="$BUILD_OUT/dmg-stage"
+rm -rf "$STAGE" "$DMG"
+mkdir -p "$STAGE"
+cp -R "$APP" "$STAGE/TriCup.app"
+ln -s /Applications "$STAGE/Applications"
+hdiutil create -volname "TriCup" -srcfolder "$STAGE" -ov -format UDZO "$DMG" >/dev/null
+rm -rf "$STAGE"
+
+# Verify the produced DMG is intact.
+hdiutil verify "$DMG" >/dev/null
+
 echo "Built app: $APP"
 echo "Artifact:  $ZIP"
+echo "DMG:       $DMG"

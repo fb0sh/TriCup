@@ -5,7 +5,7 @@
 <img src="Resources/empty.png" width="88" alt="TriCup" />
 
 - 最低系统：macOS 15
-- 架构：Apple Silicon（arm64）
+- 架构：Apple Silicon（arm64）与 Intel（x64）
 - 协议：MIT
 - 版本：**v1.0.0**
 
@@ -30,9 +30,9 @@
 
 ## 下载与安装
 
-从 [Releases](https://github.com/fb0sh/TriCup/releases) 下载 `TriCup.app.zip`：
+从 [Releases](https://github.com/fb0sh/TriCup/releases) 下载对应架构的 DMG（Apple Silicon 用 `TriCup-arm64.dmg`，Intel 用 `TriCup-x64.dmg`）：
 
-1. 解压后把 `TriCup.app` 拖入 `/Applications`。
+1. 打开 DMG，把 `TriCup.app` 拖入 `/Applications`。
 2. 首次打开会被 Gatekeeper 拦截：在 **系统设置 → 隐私与安全性** 中点击「仍要打开」（或右键 App → 打开）。**不要关闭系统安全保护**。
 3. 应用没有 Dock 图标，只在菜单栏出现一个咖啡杯。
 
@@ -135,22 +135,23 @@
 - **pmset 严格解析**：`pmset -g` 缺失或格式异常一律报错（不再默认 false）；子进程 5 秒超时。
 - **电池状态区分**：读取失败与"无电池设备"不再伪装成 AC/100%；有电池但读取失败时 fail-closed。
 - **唤醒重应用**：系统唤醒后自动重新应用当前状态，断连则降级不自动重开满杯。
-- **版本与产物**：`CFBundleShortVersionString` 从 tag 去除 `v` 并强制数字；CI 校验签名/资源/ZIP 完整性并上传 `TriCup.app.zip`。
+- **版本与产物**：`CFBundleShortVersionString` 从 tag 去除 `v` 并强制数字；CI 校验签名/资源并产出 `TriCup-arm64.dmg`、`TriCup-x64.dmg`。
 
 ---
 
 ## 开发与 CI
 
 - SwiftPM + AppKit + IOKit + 独立 Privileged Helper。本地无需 Xcode / 付费账号。
-- GitHub Actions（`macos-26`，arm64）执行 `swift build`、`swift test`、Release 打包（ad-hoc 签名）并上传 `TriCup.app.zip`；推 `v*` tag 自动创建 Release。
-- CI 不执行任何真实 `pmset`，也不安装特权 LaunchDaemon；CI 构建只读权限，仅 tag 发布任务具备写权限。
+- GitHub Actions 用矩阵并行构建两个架构：arm64 在 `macos-26`、x64 在 `macos-26-intel`；arm64 执行 `swift build`/`swift test`，两者都做 Release 打包（ad-hoc 签名）并产出对应架构的 DMG。推 `v*` tag 自动发布；也可用 `workflow_dispatch`（默认版本 `1.0.0`）手动发布。
+- **增量发布**：每个架构的 job 构建完成就立刻把自己的 DMG 上传到同一个 Release，而不是等所有架构都构建完，避免慢的 x64 拖住 arm64。
+- CI 不执行任何真实 `pmset`，也不安装特权 LaunchDaemon；构建默认只读权限，发布步骤在 job 级授予写权限且仅在 tag/手动发布时执行。
 
 手动构建（仅在 macOS 上）：
 
 ```sh
 swift build
 swift test
-bash scripts/package.sh   # 产出 tmp/build/TriCup.app.zip
+ARCH=arm64 bash scripts/package.sh   # 产出 tmp/build/TriCup.app.zip 与 TriCup-arm64.dmg
 ```
 
 ---

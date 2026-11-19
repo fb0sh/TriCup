@@ -3,21 +3,48 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version without leading v (e.g. 1.0.0). Publishes to tag v<version>."
+        required: false
+        default: "1.0.0"
+        type: string
 
 permissions:
   contents: read
 
 jobs:
   build:
-    name: Build, test and package
-    runs-on: macos-26
+    name: Build ${{ matrix.arch }} DMG
+    strategy:
+      # Never cancel the other architecture: each job publishes its own DMG as
+      # soon as it is ready, without waiting for the rest of the matrix.
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-26
+            run_tests: true
+          - arch: x64
+            runner: macos-26-intel
+            run_tests: false
+    runs-on: ${{ matrix.runner }}
+    # Needed only for the release-publishing step below; guarded by `if`.
+    permissions:
+      contents: write
     env:
       TMPDIR: ${{ github.workspace }}/tmp/ci
       TMP: ${{ github.workspace }}/tmp/ci
       TEMP: ${{ github.workspace }}/tmp/ci
+      ARCH: ${{ matrix.arch }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # For a manual run, check out the exact release tag so the published
+          # DMG matches that version. Otherwise use the default checkout ref.
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || '' }}
 
       - name: Create temp dir
         run: mkdir -p "$TMPDIR"
@@ -34,15 +61,15 @@ jobs:
             test -x "$p" || { echo "MISSING $p"; exit 1; }
           done
 
-      - name: Build
-        run: swift build -c debug --scratch-path tmp/.build
+      - name: Build and test (arm64 only)
+        if: matrix.run_tests
+        run: |
+          swift build -c debug --scratch-path tmp/.build
+          swift test --scratch-path tmp/.build
 
-      - name: Test
-        run: swift test --scratch-path tmp/.build
-
-      - name: Package (ad-hoc signed .app.zip)
+      - name: Package ${{ matrix.arch }} DMG (ad-hoc signed)
         env:
-          VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+          VERSION: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || github.ref_name }}
           BUILD_NUMBER: ${{ github.run_number }}
         run: bash scripts/package.sh
 
@@ -77,31 +104,30 @@ jobs:
           cp -R "tmp/build/TriCup.app" "$ISOLATED/"
           "$ISOLATED/TriCup.app/Contents/MacOS/TriCup" --self-test
 
-      - name: Upload TriCup.app.zip
+      - name: Upload ${{ matrix.arch }} DMG
         uses: actions/upload-artifact@v4
         with:
-          name: TriCup-app
-          path: tmp/build/TriCup.app.zip
+          name: TriCup-${{ matrix.arch }}-dmg
+          path: tmp/build/TriCup-${{ matrix.arch }}.dmg
           if-no-files-found: error
 
-  release:
-    name: Publish release
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
-    runs-on: macos-26
-    permissions:
-      contents: write
-    steps:
-      - name: Download artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: TriCup-app
-          path: dist
-      - name: Create GitHub release
+      # Publish this architecture's DMG to the release the moment its own build
+      # succeeds, instead of waiting for every architecture to finish.
+      - name: Publish ${{ matrix.arch }} DMG to release
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || github.ref_name }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/TriCup.app.zip \
-            --title "TriCup $GITHUB_REF_NAME" \
-            --notes "TriCup $GITHUB_REF_NAME (arm64, ad-hoc signed)." \
-            --verify-tag --repo "$GITHUB_REPOSITORY"
+          set -euo pipefail
+          NOTES="TriCup $TAG (arm64 + x64 DMG, ad-hoc signed)."
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit "$TAG" --notes "$NOTES" --repo "$GITHUB_REPOSITORY"
+          else
+            # Create the release up front; tolerate a concurrent create from the
+            # other architecture's job, which will then just upload its asset.
+            gh release create "$TAG" --title "TriCup $TAG" --notes "$NOTES" \
+              --verify-tag --repo "$GITHUB_REPOSITORY" || true
+          fi
+          gh release upload "$TAG" "tmp/build/TriCup-${{ matrix.arch }}.dmg" \
+            --clobber --repo "$GITHUB_REPOSITORY"
