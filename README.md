@@ -2,7 +2,7 @@
 
 **一个极简的 macOS 菜单栏防休眠工具**：用一个咖啡杯图标的填充程度表示三种状态，一次点击完成切换。无主窗口、无 Dock 图标、无第三方运行时依赖。
 
-<img src="docs/images/icon-full.webp" width="88" alt="TriCup" />
+<img src="Resources/empty.png" width="88" alt="TriCup" />
 
 - 最低系统：macOS 15
 - 架构：Apple Silicon（arm64）
@@ -15,9 +15,9 @@
 
 | 状态 | 图标 | 行为 |
 | --- | --- | --- |
-| **Sleep（空杯）** | ![空杯](docs/images/icon-empty.webp) | 允许系统、显示器与合盖休眠 |
-| **Awake（半杯）** | ![半杯](docs/images/icon-half.webp) | 系统与显示器保持唤醒，**允许**合盖休眠 |
-| **Always Awake（满杯）** | ![满杯](docs/images/icon-full.webp) | 系统持续运行，**合盖也不休眠** |
+| **Sleep（空杯）** | ![空杯](Resources/empty.png) | 允许系统、显示器与合盖休眠 |
+| **Awake（半杯）** | ![半杯](Resources/half.png) | 系统与显示器保持唤醒，**允许**合盖休眠 |
+| **Always Awake（满杯）** | ![满杯](Resources/full.png) | 系统持续运行，**合盖也不休眠** |
 
 - **左键**点击图标：空杯 → 半杯 → 满杯 → 空杯 循环。
 - **右键**：原生菜单，可直接选择三态、登录时启动、卸载 Helper、退出。
